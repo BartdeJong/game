@@ -770,13 +770,14 @@ app.addEventListener('click', async (event) => {
     } else if (action === 'new-game') {
       resetRoom();
     } else if (action === 'cancel-guest') {
-      guestPeer?.destroy();
+      const peer = guestPeer;
       guestPeer = null;
       guestChannel = null;
       guestState = null;
       guestSubmitted = false;
       screen = 'home';
       notice = '';
+      peer?.destroy();
       render();
     } else if (action === 'rules') {
       window.alert('Each round, everyone starts a tower, adds a floor, or banks one. The shared 2d6 wind is revealed first. After all players commit, banking scores 1 + 2 + … + height and protects that tower; every other tower topples when the wind reaches its height limit. The game ends after someone banks a third tower. Highest score wins.');
