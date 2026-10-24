@@ -17,13 +17,13 @@ The host browser generates the shared dice, validates actions, and owns the live
 ## Rules
 
 - Every round uses one shared roll of two six-sided dice. Their sum is the wind.
-- After the roll is shown, each player secretly commits one move from their own visual tower board: start a tower, add one floor to an unbanked tower, or bank a tower.
-- Once everyone commits, all moves are revealed together. Banking protects the tower and scores `height × (height + 1) / 2`.
+- Before the wind is rolled, each player secretly commits one move from their own visual tower board: start a tower, add one floor to an unbanked tower, or bank a tower.
+- Once everyone commits, the host rolls and shares the wind. Banking protects the tower and scores `height × (height + 1) / 2`.
 - Every unbanked tower is then exposed to that round's wind. It topples if the wind is at least its limit.
 - Height limits are: 1 → 12, 2 → 11, 3 → 10, 4 → 9, 5 → 8, 6 → 7, and 7+ → 6.
 - The host sets a room target from 10 to 200 points (default 80). After a round, the first player at or above the target wins; the highest score wins, with tied high scores sharing the victory. Each tied winner earns one room win.
 
-The roll is revealed before choices, and a newly started or extended tower is exposed to that wind. Players see their own towers and every player's score; opponents' towers and detailed moves stay hidden. After each round, the game shows how many towers fell for each player. Robots choose and submit moves automatically. The in-game build log shows each roll, your own move and bank, and the per-player fall counts. Room win totals remain with the players when the host starts another game in the same room.
+A newly started or extended tower is exposed to the wind rolled after choices are locked. Players see their own towers and every player's score; opponents' towers and detailed moves stay hidden. After each round, the game shows how many towers fell for each player. Robots choose and submit moves automatically without seeing the wind first. The in-game build log shows each roll, your own move and bank, and the per-player fall counts. Room win totals remain with the players when the host starts another game in the same room.
 
 ## Run and test locally
 
@@ -43,7 +43,7 @@ The dev server is for development only and does not create a LAN room server. To
 - Open the published HTTPS page in Safari on the host and at least one guest iPhone.
 - Enter the host's short room code on one or more guest iPhones and confirm they join automatically.
 - Repeat pairing for up to four guests, then confirm everyone sees the same roll and resolved score.
-- Confirm choices remain hidden until all connected players commit.
+- Confirm the wind is rolled only after all connected players commit, and the same result is then shared with everyone.
 - Confirm the host can change the default 80-point target in the lobby, the next round begins automatically after 3 seconds, and room win totals carry into a same-room rematch.
 - Background and resume Safari, interrupt Wi‑Fi, and close a guest tab; verify status messages and host removal behavior.
 - Confirm room codes work with lowercase input and optional hyphens/spaces.

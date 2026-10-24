@@ -36,7 +36,7 @@ Out of scope: accounts, an application-owned signaling backend, online matchmaki
 
 The room code is an invite and should only be shared with intended players. The PeerJS Cloud service handles peer discovery and signaling but does not receive game messages after direct connection setup. No camera permission or manual offer/answer exchange is required. The free shared service may be rate-limited or unavailable; it is not guaranteed for production. The app configures STUN but no TURN relay, so restrictive NAT/firewall networks can still prevent peers from connecting.
 
-**Round flow**: show the round's shared 2d6 wind result → collect simultaneous human choices and automatic robot choices → apply valid build/bank actions → topple exposed towers according to the wind table → publish scores and per-player fall counts without revealing opponents' towers or detailed actions → automatically begin the next round after a 3-second results pause unless a player has reached the room's points target.
+**Round flow**: collect simultaneous hidden human choices and automatic robot choices → roll and share the round's 2d6 wind result → apply valid build/bank actions → topple exposed towers according to the wind table → publish scores and per-player fall counts without revealing opponents' towers or detailed actions → automatically begin the next round after a 3-second results pause unless a player has reached the room's points target.
 
 **Connectivity and lifecycle constraints**: Room setup requires internet access to reach PeerJS Cloud. WebRTC direct connectivity depends on the iOS browser, Wi-Fi/network policy, and ICE behavior; same-Wi-Fi access alone does not guarantee peer connectivity (for example, client isolation or browser restrictions can prevent it). This must be verified on real iPhones before implementation is considered viable. The shared PeerJS service's uptime, rate limits, and room-ID availability are outside the app's control. A disconnected guest's seat/state remains only in host memory and the round may pause while the host removes them; exact recovery behavior is a validation item. There is no host migration. If the host closes the page, the host browser is backgrounded or suspended, or the device/browser loses the active page, the match may be interrupted or lost. Active state is not persisted or recoverable from another device.
 
@@ -58,7 +58,7 @@ The room code is an invite and should only be shared with intended players. The 
 | Wind strength | Sum of the two dice, from 2–12. |
 | Toppling test | An unbanked tower topples when wind strength is greater than or equal to its height's limit. |
 | Height → wind limit | Height 1: 12; 2: 11; 3: 10; 4: 9; 5: 8; 6: 7; 7 or higher: 6. |
-| Roll/choice timing | Reveal the shared roll first; players then privately commit simultaneously, so choices may respond to that roll. |
+| Roll/choice timing | Players privately commit simultaneously before the shared roll; the host rolls and shares it after all choices are locked. |
 | Build exposure | Apply the chosen build before the toppling test; a newly started or extended tower is exposed to that round's wind. |
 | Banking | A bank action secures one existing tower before wind resolution and scores `height × (height + 1) / 2`; no other action is taken by that player that round. |
 | Final round | End after resolving the round in which any player reaches or exceeds the host-configured target. |

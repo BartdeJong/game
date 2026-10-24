@@ -324,14 +324,14 @@ function renderGame(state: MatchState, isHost: boolean): string {
   const me = state.players.find((player) => player.id === playerId);
   const isSubmitted = isHost ? submitted.has(hostId) : guestSubmitted;
   const choices = state.status === 'choice'
-    ? `<div class="wait-card"><span class="spinner" aria-hidden="true"></span><div><strong>${isSubmitted ? 'Choice locked in' : 'Choose your move'}</strong><p>${isSubmitted ? `Waiting for other players · ${submittedCount}/${state.players.length} ready` : me ? `Your move is private · ${submittedCount}/${state.players.length} ready` : `Waiting for your move · ${submittedCount}/${state.players.length} ready`}</p></div></div>`
+    ? `<div class="wait-card"><span class="spinner" aria-hidden="true"></span><div><strong>${isSubmitted ? 'Choice locked in' : 'Choose your move'}</strong><p>${isSubmitted ? `Waiting for other players · ${submittedCount}/${state.players.length} ready` : me ? `Your move is private · ${submittedCount}/${state.players.length} ready` : `Waiting for your move · ${submittedCount}/${state.players.length} ready`}</p><p class="wind-hidden-note">The shared wind rolls after everyone commits.</p></div></div>`
     : '';
 
   return `<section class="game-panel board-panel">
     <div class="section-heading"><div><p class="eyebrow">${state.status === 'finished' ? 'GAME OVER' : `ROUND ${state.round}`}</p><h1>${state.status === 'finished' ? 'The skyline is <em>set.</em>' : 'Build or <em>bank?</em>'}</h1></div>
       ${state.dice ? `<div class="wind-card"><span>ROUND ${state.round} WIND</span><div class="dice-pair">${dieMarkup(state.dice[0])}${dieMarkup(state.dice[1])}</div><strong>${state.dice[0] + state.dice[1]}</strong><small>wind strength</small></div>` : ''}
     </div>
-    ${state.status === 'choice' ? `<p class="lead-small">Reach ${state.targetPoints} points to win. The wind is known; choose one move before it sweeps through every unbanked tower.</p>` : ''}
+    ${state.status === 'choice' ? `<p class="lead-small">Reach ${state.targetPoints} points to win. Commit one move before the shared wind is rolled.</p>` : ''}
     ${me ? towerBoardMarkup(me, state, state.status === 'choice' && !isSubmitted) : ''}
     <section class="scoreboard" aria-label="Players and scores">
       ${state.players.map((player) => `<article class="score-card ${player.id === playerId ? 'score-card-me' : ''}">
@@ -446,7 +446,7 @@ function historyMarkup(round: MatchState['history'][number], state: MatchState, 
 function rulesMarkup(): string {
   return `<p>The host sets a room win target from ${MIN_WIN_POINTS} to ${MAX_WIN_POINTS} points before each game. The first player to reach or exceed it wins after that round resolves. Each round, the shared wind is two dice added together. After seeing it, everyone simultaneously starts a tower, adds one floor, or banks one tower. Banking scores 1 + 2 + … + height and protects that tower. All other towers face the wind after the move. Tied high scores share the win, and each tied winner adds one room win.</p>
     <div class="limit-table"><span>Height</span><span>Topples at wind</span>${[1, 2, 3, 4, 5, 6, 7].map((height) => `<b>${height === 7 ? '7+' : height}</b><b>${heightLimit(height)}+</b>`).join('')}</div>
-    <p class="quiet-note">The roll is revealed before choices. A new or extended tower is exposed to that same wind. When a round resolves, the next roll happens automatically after 3 seconds.</p>`;
+    <p class="quiet-note">Everyone commits before the roll. A new or extended tower is exposed to the wind rolled after all choices lock. The next round begins automatically after 3 seconds.</p>`;
 }
 
 async function copyCode(selector: string, successMessage: string): Promise<void> {
@@ -578,11 +578,10 @@ function broadcastState(): void {
 }
 
 function submitBotActions(): void {
-  if (!hostState || hostState.status !== 'choice' || !hostState.dice) return;
-  const wind = hostState.dice[0] + hostState.dice[1];
+  if (!hostState || hostState.status !== 'choice') return;
   for (const player of hostState.players) {
     if (player.isBot && !submitted.has(player.id)) {
-      submitted.set(player.id, chooseBotAction(player, wind));
+      submitted.set(player.id, chooseBotAction(player, hostState.targetPoints));
     }
   }
 }
@@ -594,7 +593,7 @@ function maybeResolveRound(): void {
     return;
   }
   try {
-    hostState = resolveRound(hostState, submitted);
+    hostState = resolveRound(hostState, submitted, rollDice());
     submitted.clear();
     submittedCount = 0;
     broadcastState();
@@ -610,7 +609,7 @@ function scheduleAutomaticNextRound(): void {
   autoRollTimer = window.setTimeout(() => {
     autoRollTimer = null;
     if (screen !== 'host' || !hostState || hostState.status !== 'resolution') return;
-    hostState = beginNextRound(hostState, rollDice());
+    hostState = beginNextRound(hostState);
     submitted.clear();
     submittedCount = 0;
     selectedAction = null;
@@ -941,14 +940,14 @@ app.addEventListener('click', async (event) => {
         showFailure('Remove disconnected players before starting the game.');
         return;
       }
-      hostState = beginGame(hostState, rollDice());
+      hostState = beginGame(hostState);
       submitted.clear();
       submittedCount = 0;
       selectedAction = null;
       submitBotActions();
       maybeResolveRound();
     } else if (action === 'rematch' && hostState) {
-      hostState = beginRematch(hostState, rollDice());
+      hostState = beginRematch(hostState);
       submitted.clear();
       submittedCount = 0;
       selectedAction = null;
@@ -976,7 +975,7 @@ app.addEventListener('click', async (event) => {
       peer?.destroy();
       render();
     } else if (action === 'rules') {
-      window.alert(`The host sets the win target before each game. The first player to reach or exceed that score wins after the round resolves. Each round, everyone starts a tower, adds a floor, or banks one. The shared 2d6 wind is revealed first. Banking scores 1 + 2 + … + height and protects that tower; every other tower topples when the wind reaches its height limit. Tied high scores share the win and each add one room win. The next round rolls automatically after 3 seconds.`);
+      window.alert(`The host sets the win target before each game. The first player to reach or exceed that score wins after the round resolves. Each round, everyone secretly starts a tower, adds a floor, or banks one. After all moves are committed, the shared 2d6 wind is rolled. Banking scores 1 + 2 + … + height and protects that tower; every other tower topples when the wind reaches its height limit. Tied high scores share the win and each add one room win. The next round starts automatically after 3 seconds.`);
     }
   } catch (error) {
     showFailure(error instanceof Error ? error.message : 'That action could not be completed.');

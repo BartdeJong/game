@@ -102,7 +102,10 @@ function isMatchState(value: unknown): value is MatchState {
   ) {
     return false;
   }
-  return value.dice === null || (Array.isArray(value.dice) && value.dice.length === 2);
+  if (value.status === 'lobby' || value.status === 'choice') return value.dice === null;
+  return Array.isArray(value.dice) &&
+    value.dice.length === 2 &&
+    value.dice.every((die) => typeof die === 'number' && Number.isInteger(die) && die >= 1 && die <= 6);
 }
 
 function isPlayerState(value: unknown): boolean {

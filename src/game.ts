@@ -90,12 +90,12 @@ export function isLegalAction(player: Player, action: PlayerAction): boolean {
   return player.towers.some((tower) => tower.id === action.towerId);
 }
 
-export function beginGame(state: MatchState, dice: [number, number]): MatchState {
+export function beginGame(state: MatchState): MatchState {
   if (state.status !== 'lobby' || state.players.length < MIN_PLAYERS || state.players.length > MAX_PLAYERS) {
     throw new Error('The room needs 2–5 players before the game can start.');
   }
   validateTargetPoints(state.targetPoints);
-  return { ...state, status: 'choice', round: 1, dice: [...dice], history: [], winnerIds: [] };
+  return { ...state, status: 'choice', round: 1, dice: null, history: [], winnerIds: [] };
 }
 
 export function returnToLobby(state: MatchState): MatchState {
@@ -114,7 +114,7 @@ export function returnToLobby(state: MatchState): MatchState {
   };
 }
 
-export function beginRematch(state: MatchState, dice: [number, number]): MatchState {
+export function beginRematch(state: MatchState): MatchState {
   if (state.status !== 'finished') {
     throw new Error('A rematch can only start after a game finishes.');
   }
@@ -129,7 +129,7 @@ export function beginRematch(state: MatchState, dice: [number, number]): MatchSt
     ...state,
     status: 'choice',
     round: 1,
-    dice: [...dice],
+    dice: null,
     players: resetGamePlayers(state.players),
     history: [],
     winnerIds: [],
@@ -146,11 +146,11 @@ function resetGamePlayers(players: Player[]): Player[] {
   }));
 }
 
-export function beginNextRound(state: MatchState, dice: [number, number]): MatchState {
+export function beginNextRound(state: MatchState): MatchState {
   if (state.status !== 'resolution') {
     throw new Error('The next round can only start after a round resolves.');
   }
-  return { ...state, status: 'choice', round: state.round + 1, dice: [...dice] };
+  return { ...state, status: 'choice', round: state.round + 1, dice: null };
 }
 
 export function createPlayerView(state: MatchState, playerId: string): MatchState {
@@ -173,8 +173,9 @@ export function createPlayerView(state: MatchState, playerId: string): MatchStat
 export function resolveRound(
   state: MatchState,
   actions: Map<string, PlayerAction>,
+  dice: [number, number],
 ): MatchState {
-  if (state.status !== 'choice' || !state.dice) {
+  if (state.status !== 'choice' || state.dice !== null) {
     throw new Error('There is no active round to resolve.');
   }
   if (actions.size !== state.players.length || state.players.some((player) => !actions.has(player.id))) {
@@ -186,16 +187,17 @@ export function resolveRound(
       throw new Error(`Invalid action for ${player.name}.`);
     }
   }
+  validateDice(dice);
 
   const players = state.players.map((player) => ({
     ...player,
     towers: player.towers.map((tower) => ({ ...tower })),
   }));
   let nextTowerId = state.nextTowerId;
-  const wind = state.dice[0] + state.dice[1];
+  const wind = dice[0] + dice[1];
   const resolution: RoundResolution = {
     round: state.round,
-    dice: [...state.dice],
+    dice: [...dice],
     wind,
     fallenCounts: Object.fromEntries(players.map((player) => [player.id, 0])),
     actions: [],
@@ -251,10 +253,17 @@ export function resolveRound(
 
   return {
     ...state,
+    dice: [...dice],
     status: gameEnded ? 'finished' : 'resolution',
     players,
     history: [...state.history, resolution],
     winnerIds,
     nextTowerId,
   };
+}
+
+function validateDice(dice: [number, number]): void {
+  if (dice.length !== 2 || dice.some((value) => !Number.isInteger(value) || value < 1 || value > 6)) {
+    throw new Error('Each die must show a whole number from 1 to 6.');
+  }
 }
