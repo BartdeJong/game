@@ -1,5 +1,3 @@
-import { BrowserQRCodeReader } from '@zxing/browser';
-import QRCode from 'qrcode';
 import { compressSync, decompressSync, strFromU8, strToU8 } from 'fflate';
 
 export interface SessionSignal {
@@ -29,8 +27,18 @@ export function encodeSignal(signal: SessionSignal): string {
 }
 
 export function decodeSignal(value: string): SessionSignal {
-  if (!value.startsWith(SIGNAL_PREFIX)) throw new Error('That QR code is not a Skyline connection code.');
-  const decoded: unknown = JSON.parse(strFromU8(decompressSync(fromBase64Url(value.slice(SIGNAL_PREFIX.length)))));
+  const code = value.trim().replace(/\s+/g, '');
+  if (!code.startsWith(SIGNAL_PREFIX)) throw new Error('That is not a Skyline connection code.');
+  const payload = code.slice(SIGNAL_PREFIX.length);
+  if (!payload || !/^[A-Za-z0-9_-]+$/.test(payload)) {
+    throw new Error('The connection code is invalid or incomplete.');
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(strFromU8(decompressSync(fromBase64Url(payload))));
+  } catch {
+    throw new Error('The connection code is invalid or incomplete.');
+  }
   if (
     typeof decoded !== 'object' ||
     decoded === null ||
@@ -42,57 +50,6 @@ export function decodeSignal(value: string): SessionSignal {
     throw new Error('The connection code is invalid or incomplete.');
   }
   return { type: decoded.type, sdp: decoded.sdp };
-}
-
-export function renderQr(value: string): Promise<string> {
-  return QRCode.toDataURL(value, {
-    errorCorrectionLevel: 'L',
-    margin: 2,
-    width: 420,
-    color: { dark: '#14211f', light: '#ffffff' },
-  });
-}
-
-export async function scanQr(video: HTMLVideoElement, signal?: AbortSignal): Promise<string> {
-  if (!globalThis.isSecureContext || typeof navigator.mediaDevices?.getUserMedia !== 'function') {
-    throw new Error(
-      'QR scanning needs a secure HTTPS page. On iPhone, open the GitHub Pages HTTPS site; the local-network HTTP address cannot access the camera.',
-    );
-  }
-  const reader = new BrowserQRCodeReader();
-  return new Promise((resolve, reject) => {
-    let controls: { stop: () => void } | undefined;
-    let settled = false;
-    const finish = (callback: () => void) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      controls?.stop();
-      signal?.removeEventListener('abort', onAbort);
-      callback();
-    };
-    const onAbort = () => finish(() => reject(new DOMException('Scan cancelled.', 'AbortError')));
-    const timeout = window.setTimeout(() => {
-      finish(() => reject(new Error('No QR code was scanned. Try again with the code in view.')));
-    }, 90_000);
-
-    if (signal?.aborted) {
-      onAbort();
-      return;
-    }
-    signal?.addEventListener('abort', onAbort, { once: true });
-    reader.decodeFromVideoDevice(undefined, video, (result, error, activeControls) => {
-      controls = activeControls;
-      if (result && !settled) {
-        finish(() => resolve(result.getText()));
-      } else if (error && error.name !== 'NotFoundException' && !settled) {
-        finish(() => reject(new Error(`Camera scan failed: ${error.message}`)));
-      }
-    }).catch((error: unknown) => {
-      if (settled) return;
-      finish(() => reject(error instanceof Error ? error : new Error('Camera access failed.')));
-    });
-  });
 }
 
 export async function waitForIceGathering(peer: RTCPeerConnection, timeoutMs = 20_000): Promise<void> {

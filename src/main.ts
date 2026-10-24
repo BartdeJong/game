@@ -17,8 +17,6 @@ import {
   createPeerConnection,
   decodeSignal,
   encodeSignal,
-  renderQr,
-  scanQr,
   waitForIceGathering,
 } from './signaling';
 import './style.css';
@@ -30,7 +28,6 @@ interface HostConnection {
 }
 
 type Screen = 'home' | 'host' | 'guest-setup' | 'guest';
-type ScanMode = 'host-answer' | 'guest-offer';
 
 const app = document.querySelector<HTMLElement>('#app');
 if (!app) throw new Error('The game page is missing its app container.');
@@ -51,8 +48,6 @@ let creatingOffer = false;
 let roomGeneration = 0;
 let guestPeer: RTCPeerConnection | null = null;
 let guestChannel: RTCDataChannel | null = null;
-let scanMode: ScanMode | null = null;
-let scanAbort: AbortController | null = null;
 let notice = '';
 let failure = '';
 
@@ -146,8 +141,6 @@ function render(): void {
     screen === 'guest-setup' ? renderGuestSetup() :
       screen === 'host' ? renderHost() : renderGuest();
   app.innerHTML = `${headerMarkup()}${noticeMarkup()}${body}${footerMarkup()}`;
-  if (pairing && screen === 'host' && !pairing.accepted) void attachQr('#offer-qr', pairing.offer);
-  if (screen === 'guest' && guestAnswer) void attachQr('#answer-qr', guestAnswer);
 }
 
 let guestAnswer = '';
@@ -182,7 +175,7 @@ function renderHome(): string {
   </section>
   <section class="connect-note">
     <span class="connect-icon" aria-hidden="true">⌁</span>
-    <div><strong>Playing on phones?</strong><p>Open this page on every device. Pair guests with a two-way QR scan over the same Wi‑Fi. Keep the host tab open and in the foreground.</p></div>
+    <div><strong>Playing on phones?</strong><p>Open this page on every device. Pair guests by copying connection codes between devices on the same Wi‑Fi. Keep the host tab open and in the foreground.</p></div>
   </section>
   <div id="host-form-slot"></div>
 `;
@@ -192,20 +185,15 @@ function renderGuestSetup(): string {
   return `<section class="narrow-panel">
     <button class="back-link" data-action="home" type="button">← Back</button>
     <p class="eyebrow">JOIN THE SKYLINE</p>
-    <h1>Scan the host's<br /><em>offer code.</em></h1>
-    <p class="lead-small">Use the camera in this page to scan the offer QR shown on the host's screen. Then show your answer QR for the host to scan.</p>
+    <h1>Enter the host's<br /><em>connection code.</em></h1>
+    <p class="lead-small">Ask the host to copy their offer code and send it to you. Paste it below; you’ll get an answer code to send back. Share codes only with players in your room.</p>
     <form id="guest-form" class="form-card">
       <label for="guest-name">Your name</label>
       <input id="guest-name" name="name" maxlength="18" autocomplete="nickname" required value="${escapeHtml(guestName)}" placeholder="e.g. Robin" />
-      <button class="button button-primary button-full" type="submit">Scan host offer</button>
+      <label for="guest-offer-code">Host offer code</label>
+      <textarea id="guest-offer-code" class="signal-code" name="offerCode" rows="5" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste the host’s code here"></textarea>
+      <button class="button button-primary button-full" type="submit">Create answer code</button>
     </form>
-    ${renderScanner()}
-    ${guestAnswer ? `<section class="pair-card">
-      <p class="eyebrow">SHOW THIS TO THE HOST</p><h2>Your answer code</h2>
-      <img id="answer-qr" class="qr-image" alt="QR code with your WebRTC answer for the host" />
-      <p class="quiet-note">Keep this page open while the host scans. Connection details stay between these browsers.</p>
-      <button class="button button-secondary button-full" data-action="cancel-guest" type="button">Cancel</button>
-    </section>` : ''}
   </section>`;
 }
 
@@ -215,23 +203,28 @@ function renderHost(): string {
   if (state.status !== 'lobby') return renderGame(state, true);
   return `<section class="game-panel">
     <div class="section-heading"><div><p class="eyebrow">HOST LOBBY</p><h1>Your skyline <em>starts here.</em></h1></div><span class="pill">${connectedPlayers(state).length}/${MAX_PLAYERS} players</span></div>
-    <p class="lead-small">You are the host and a player. Add each guest by exchanging two QR codes. Both phones must be on the same Wi‑Fi.</p>
+    <p class="lead-small">You are the host and a player. Copy an offer code to each guest, then paste their answer code here. Keep everyone on the same Wi‑Fi.</p>
     <div class="player-list">${state.players.map((player) => playerMarkup(player, true)).join('')}</div>
     <div class="pair-area">
       ${creatingOffer ? `<p class="quiet-note">Preparing a private connection code…</p>` : pairing && !pairing.accepted ? `<div class="pair-card">
-        <p class="eyebrow">STEP 1 · GUEST SCANS THIS</p><h2>Host offer code</h2>
-        <img id="offer-qr" class="qr-image" alt="WebRTC offer QR code for a guest to scan" />
-        <p class="quiet-note">On the guest's phone, open this same site, enter a name, and scan this code.</p>
-        <div class="button-row"><button class="button button-secondary" data-action="scan-answer" type="button">Scan guest answer</button><button class="text-button" data-action="cancel-pair" type="button">Cancel pairing</button></div>
+        <p class="eyebrow">STEP 1 · SEND THIS TO THE GUEST</p><h2>Host offer code</h2>
+        <textarea id="host-offer-code" class="signal-code" readonly rows="5" aria-label="Host offer code">${escapeHtml(pairing.offer)}</textarea>
+        <button class="button button-secondary button-full copy-code-button" data-action="copy-offer" type="button">Copy offer code</button>
+        <p class="quiet-note">The guest pastes this into Join a game, then sends their answer code back to you.</p>
+        <form id="host-answer-form" class="form-card signal-form">
+          <label for="host-answer-code">Guest answer code</label>
+          <textarea id="host-answer-code" class="signal-code" name="answerCode" rows="5" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste the guest’s answer code here"></textarea>
+          <button class="button button-primary button-full" type="submit">Connect guest</button>
+        </form>
+        <button class="text-button" data-action="cancel-pair" type="button">Cancel pairing</button>
       </div>` : pairing?.accepted ? `<div class="pair-card">
         <p class="eyebrow">STEP 2 · CONNECTING</p><h2>Waiting for guest</h2>
         <p class="quiet-note">Their browser is opening the direct connection. Keep both pages open.</p>
         <button class="text-button" data-action="cancel-pair" type="button">Cancel pairing</button>
       </div>` : `<button class="button button-secondary" data-action="add-guest" type="button" ${connectedPlayers(state).length >= MAX_PLAYERS || creatingOffer ? 'disabled' : ''}>＋ Add a guest</button>`}
-      ${renderScanner()}
       ${connectedPlayers(state).length >= MIN_PLAYERS ? `<button class="button button-primary button-full start-button" data-action="start-game" type="button" ${pairing || creatingOffer ? 'disabled' : ''}>Start game <span aria-hidden="true">→</span></button>` : `<p class="quiet-note">Waiting for at least one guest. The host counts as a player.</p>`}
     </div>
-    <details class="help-details"><summary>Connection notes</summary><p>GitHub Pages needs internet to load the game. Pairing uses direct browser-to-browser WebRTC and does not use a relay. If local network access or camera permission is blocked, pairing may fail. iPhone may suspend a background tab; keep the host page open in front.</p></details>
+    <details class="help-details"><summary>Connection notes</summary><p>GitHub Pages needs internet to load the game. Pairing uses direct browser-to-browser WebRTC and does not use a relay. Copy/paste the offer and answer codes privately; they contain connection details. iPhone may suspend a background tab, so keep the host page open in front.</p></details>
   </section>`;
 }
 
@@ -239,7 +232,12 @@ function renderGuest(): string {
   if (!guestState) {
     return `<section class="narrow-panel">
       <p class="eyebrow">GUEST CONNECTION</p><h1>Waiting for the<br /><em>host.</em></h1>
-      ${guestAnswer ? `<div class="pair-card"><img id="answer-qr" class="qr-image" alt="Your WebRTC answer QR code" /><p class="quiet-note">The host must scan this answer code. Keep this page open.</p></div>` : ''}
+      ${guestAnswer ? `<div class="pair-card">
+        <p class="eyebrow">SEND THIS BACK TO THE HOST</p><h2>Your answer code</h2>
+        <textarea id="guest-answer-code" class="signal-code" readonly rows="5" aria-label="Guest answer code">${escapeHtml(guestAnswer)}</textarea>
+        <button class="button button-secondary button-full copy-code-button" data-action="copy-answer" type="button">Copy answer code</button>
+        <p class="quiet-note">Keep this page open while the host pastes the code and connects.</p>
+      </div>` : ''}
       <p class="lead-small">When the direct connection is ready, the shared lobby will appear here.</p>
       <button class="button button-secondary" data-action="cancel-guest" type="button">Leave</button>
     </section>`;
@@ -337,19 +335,27 @@ function rulesMarkup(): string {
     <p class="quiet-note">The roll is revealed before choices. A new or extended tower is exposed to that same wind.</p>`;
 }
 
-function renderScanner(): string {
-  return scanMode ? `<div class="scanner-card"><video id="scanner" playsinline muted aria-label="Camera scanning a QR code"></video>
-    <p class="quiet-note">Point the camera at the other phone's Skyline QR code.</p>
-    <button class="text-button" data-action="stop-scan" type="button">Cancel scan</button></div>` : '';
-}
-
-async function attachQr(selector: string, value: string): Promise<void> {
+async function copyCode(selector: string, successMessage: string): Promise<void> {
+  const field = app?.querySelector<HTMLTextAreaElement>(selector);
+  if (!field) throw new Error('The connection code is not available to copy.');
   try {
-    const url = await renderQr(value);
-    const image = app?.querySelector<HTMLImageElement>(selector);
-    if (image) image.src = url;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(field.value);
+    } else {
+      field.focus();
+      field.select();
+      if (!document.execCommand('copy')) throw new Error('Automatic copy is not available.');
+    }
+    showNotice(successMessage);
   } catch (error) {
-    showFailure(error instanceof Error ? `Could not create QR code: ${error.message}` : 'Could not create QR code.');
+    showFailure(
+      error instanceof Error
+        ? `Could not copy automatically: ${error.message}. The code is selected so you can copy it manually.`
+        : 'Could not copy automatically. The code is selected so you can copy it manually.',
+    );
+    const refreshedField = app?.querySelector<HTMLTextAreaElement>(selector);
+    refreshedField?.focus();
+    refreshedField?.select();
   }
 }
 
@@ -539,7 +545,7 @@ async function createHostOffer(): Promise<void> {
 async function acceptHostAnswer(value: string): Promise<void> {
   if (!pairing) throw new Error('There is no guest pairing waiting for an answer.');
   const signal = decodeSignal(value);
-  if (signal.type !== 'answer') throw new Error('Scan the guest answer code, not another host offer.');
+  if (signal.type !== 'answer') throw new Error('Paste the guest answer code, not another host offer.');
   await pairing.connection.peer.setRemoteDescription({ type: signal.type, sdp: signal.sdp });
   pairing.accepted = true;
   notice = 'Answer received. Waiting for the guest connection.';
@@ -548,7 +554,7 @@ async function acceptHostAnswer(value: string): Promise<void> {
 
 async function acceptGuestOffer(value: string): Promise<void> {
   const signal = decodeSignal(value);
-  if (signal.type !== 'offer') throw new Error('Scan the host offer code, not another guest answer.');
+  if (signal.type !== 'offer') throw new Error('Paste the host offer code, not another guest answer.');
   const peer = createPeerConnection();
   guestPeer = peer;
   peer.ondatachannel = (event) => {
@@ -594,43 +600,8 @@ async function acceptGuestOffer(value: string): Promise<void> {
   if (!sdp) throw new Error('The browser did not create a connection answer.');
   guestAnswer = encodeSignal({ type: 'answer', sdp });
   screen = 'guest';
-  notice = 'Show your answer code to the host, then wait for the lobby.';
+  notice = 'Copy your answer code and send it to the host. Keep this page open.';
   render();
-}
-
-async function startScan(mode: ScanMode): Promise<void> {
-  scanMode = mode;
-  scanAbort = new AbortController();
-  render();
-  const video = app?.querySelector<HTMLVideoElement>('#scanner');
-  if (!video) {
-    scanMode = null;
-    showFailure('Could not open the camera view.');
-    return;
-  }
-  try {
-    const value = await scanQr(video, scanAbort.signal);
-    scanAbort = null;
-    scanMode = null;
-    render();
-    if (mode === 'host-answer') await acceptHostAnswer(value);
-    else await acceptGuestOffer(value);
-  } catch (error) {
-    scanAbort = null;
-    scanMode = null;
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      notice = '';
-      render();
-      return;
-    }
-    if (mode === 'guest-offer') {
-      guestPeer?.close();
-      guestPeer = null;
-      guestChannel = null;
-      guestAnswer = '';
-    }
-    showFailure(error instanceof Error ? error.message : 'Could not scan that QR code.');
-  }
 }
 
 function removePlayer(playerId: string): void {
@@ -696,21 +667,17 @@ app.addEventListener('click', async (event) => {
       render();
     } else if (action === 'add-guest') {
       await createHostOffer();
-    } else if (action === 'scan-answer') {
-      await startScan('host-answer');
+    } else if (action === 'copy-offer') {
+      await copyCode('#host-offer-code', 'Host offer code copied.');
+    } else if (action === 'copy-answer') {
+      await copyCode('#guest-answer-code', 'Guest answer code copied.');
     } else if (action === 'cancel-pair') {
       if (pairing) {
         hostConnections.delete(pairing.connection);
         pairing.connection.peer.close();
         pairing = null;
       }
-      scanMode = null;
       notice = 'Guest pairing cancelled.';
-      render();
-    } else if (action === 'stop-scan') {
-      scanAbort?.abort();
-      scanAbort = null;
-      scanMode = null;
       render();
     } else if (action === 'start-game' && hostState) {
       if (connectedPlayers(hostState).length < MIN_PLAYERS) {
@@ -776,12 +743,17 @@ app.addEventListener('submit', async (event) => {
       notice = '';
       failure = '';
       render();
+    } else if (form.id === 'host-answer-form') {
+      const data = new FormData(form);
+      await acceptHostAnswer(String(data.get('answerCode') ?? '').trim());
     } else if (form.id === 'guest-form') {
       const data = new FormData(form);
       guestName = String(data.get('name') ?? '').trim();
       if (!guestName || guestName.length > 18) throw new Error('Enter a name with 1–18 characters.');
+      const offerCode = String(data.get('offerCode') ?? '').trim();
+      if (!offerCode) throw new Error('Paste the host offer code.');
       guestId = randomId();
-      await startScan('guest-offer');
+      await acceptGuestOffer(offerCode);
     } else if (form.id === 'action-form') {
       const select = form.querySelector<HTMLSelectElement>('[name="action"]');
       if (!select) throw new Error('Choose a move first.');

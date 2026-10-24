@@ -7,6 +7,7 @@ import {
   resolveRound,
   towerPoints,
 } from '../.test-build/src/game.js';
+import { decodeSignal, encodeSignal } from '../.test-build/src/signaling.js';
 
 function player(id, overrides = {}) {
   return {
@@ -110,4 +111,19 @@ test('rejects incomplete or illegal action sets without changing the original st
     ['b', { kind: 'new' }],
   )), /Invalid action/);
   assert.deepEqual(state.players[0].towers, []);
+});
+
+test('round-trips compressed offer and answer codes, including pasted line breaks', () => {
+  for (const type of ['offer', 'answer']) {
+    const signal = { type, sdp: `v=0\r\no=- ${type} session\r\ns=-\r\n` };
+    const code = encodeSignal(signal);
+    assert.ok(code.startsWith('SKY1:'));
+    assert.deepEqual(decodeSignal(code), signal);
+    assert.deepEqual(decodeSignal(`${code.slice(0, 12)}\n${code.slice(12)}`), signal);
+  }
+});
+
+test('rejects connection codes that are not Skyline codes or have an invalid payload', () => {
+  assert.throws(() => decodeSignal('not-a-code'), /not a Skyline connection code/);
+  assert.throws(() => decodeSignal('SKY1:invalid'), /invalid|incomplete/i);
 });

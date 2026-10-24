@@ -26,9 +26,9 @@ body {
     #14211f;
 }
 
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { -webkit-tap-highlight-color: transparent; }
-button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible, summary:focus-visible {
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible, summary:focus-visible {
   outline: 3px solid var(--lime);
   outline-offset: 3px;
 }
@@ -207,7 +207,7 @@ h1 em, .narrow-panel h1 em { color: var(--lime); font-weight: 600; }
 .host-form { grid-template-columns: 1fr auto; align-items: end; max-width: 580px; }
 .host-form label { grid-column: 1 / -1; }
 label { color: var(--muted); font-size: .83rem; }
-input, select {
+input, select, textarea {
   width: 100%;
   min-height: 47px;
   padding: 10px 12px;
@@ -216,7 +216,8 @@ input, select {
   color: var(--ink);
   background: #14211f;
 }
-input::placeholder { color: #788c80; }
+input::placeholder, textarea::placeholder { color: #788c80; }
+textarea { resize: vertical; }
 
 .narrow-panel, .game-panel { width: min(790px, 100%); margin: 45px auto; }
 .narrow-panel h1, .game-panel h1 { font-size: clamp(2.7rem, 6vw, 4rem); }
@@ -231,9 +232,16 @@ input::placeholder { color: #788c80; }
 }
 .pair-card { text-align: center; }
 .pair-card h2, .resolution-card h2 { margin-bottom: 8px; font-family: var(--serif); font-size: 1.7rem; }
-.qr-image { display: block; width: min(100%, 330px); aspect-ratio: 1; margin: 16px auto; border-radius: 4px; background: white; image-rendering: pixelated; }
-.scanner-card { margin: 20px 0; padding: 15px; border: 1px solid var(--line); border-radius: 5px; background: #0d1715; text-align: center; }
-.scanner-card video { width: min(100%, 430px); max-height: 55vh; border-radius: 4px; background: #000; object-fit: cover; }
+.signal-code {
+  min-height: 112px;
+  font: .68rem/1.45 var(--mono);
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.signal-code[readonly] { color: #d4e0d5; }
+.signal-form { margin: 20px 0 0; text-align: left; }
+.copy-code-button { margin-top: 14px; }
 .pair-area { margin-top: 22px; }
 .pair-area > .button { margin-top: 15px; }
 .start-button { margin-top: 22px; }

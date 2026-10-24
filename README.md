@@ -6,13 +6,13 @@ A small, mobile-first dice game for 2–5 players. The static TypeScript app is 
 
 1. Open the GitHub Pages URL on every device. The first page load needs internet.
 2. The host taps **Host a game**, enters a name, and taps **Add a guest**.
-3. Each guest opens **Join a game**, enters a name, scans the host's offer QR code, and shows their answer QR code.
-4. The host scans that answer code. Repeat the two-code exchange for each guest.
+3. Each guest opens **Join a game**, enters a name, and pastes the host's offer code.
+4. The guest copies their answer code back to the host, who pastes it to connect them. Repeat the exchange for each guest.
 5. Once 2–5 players are connected, the host starts the game. Keep the host page open and in the foreground.
 
-Pairing exchanges WebRTC connection descriptions directly as compressed QR codes. No room service, cloud signaling, STUN/TURN server, or relay is used. Both devices need camera permission and the same Wi-Fi network. Network client isolation or browser restrictions may prevent a direct connection. Offer/answer QR codes can be dense and may be difficult for some cameras to scan.
+Pairing exchanges compressed WebRTC connection descriptions as copy/paste codes. Use the **Copy** button where available, or select the code and copy it manually. Share codes privately with the intended player; they contain connection details. No room service, cloud signaling, STUN/TURN server, or relay is used. Both devices need the same Wi-Fi network. Network client isolation or browser restrictions may prevent a direct connection. Codes can be long, so use a message or other text-sharing method that preserves the full code.
 
-The host browser generates the shared dice, validates actions, and owns the live match state. If the host closes or loses the page, the room cannot be recovered. A disconnected guest must be removed by the host; guests cannot rejoin a match already in progress, so restart the room if they need to return. iOS may suspend a background tab, so keep the host in the foreground. The app has not yet been verified on physical iPhones; local WebRTC and QR pairing on iPhone Safari remain go/no-go tests.
+The host browser generates the shared dice, validates actions, and owns the live match state. If the host closes or loses the page, the room cannot be recovered. A disconnected guest must be removed by the host; guests cannot rejoin a match already in progress, so restart the room if they need to return. iOS may suspend a background tab, so keep the host in the foreground. The app has not yet been verified on physical iPhones; local WebRTC and copy/paste pairing on iPhone Safari remain go/no-go tests.
 
 ## Rules
 
@@ -36,18 +36,18 @@ npm run build
 npm run dev
 ```
 
-The dev server is for development only and does not create a LAN room server. To test multi-device pairing, publish the HTTPS build to GitHub Pages or serve the built files through an HTTPS static server with a secure camera context. Physical iPhone tests are required for camera permission, local ICE connectivity, QR readability, multiple guests, and background/resume behavior.
+The dev server is for development only and does not create a LAN room server. To test multi-device pairing, publish the build to GitHub Pages or serve the built files through a static server. Physical iPhone tests are required for local ICE connectivity, copying/pasting long codes, multiple guests, and background/resume behavior.
 
 ### Physical iPhone smoke test
 
 - Open the published HTTPS page in Safari on the host and at least one guest iPhone.
-- Grant camera permission; scan the host offer and scan the guest answer back on the host.
+- Copy the host offer code to the guest, then copy the guest answer code back to the host.
 - Repeat pairing for up to four guests, then confirm everyone sees the same roll and resolved score.
 - Confirm choices remain hidden until all connected players commit.
 - Background and resume Safari, interrupt Wi‑Fi, and close a guest tab; verify status messages and host removal behavior.
-- Check that the generated QR codes remain readable on the actual screen sizes and camera distances.
+- Check copy/paste behavior for full-length codes, including any line breaks added by the sharing method.
 
-Direct same-Wi‑Fi WebRTC without a signaling or relay service is the principal feasibility risk. If these checks fail on the intended iPhone/browser/network combination, the approved no-relay architecture needs to change before this can be treated as a playable iPhone MVP.
+Direct same-Wi‑Fi WebRTC without a signaling or relay service is the principal feasibility risk. If these checks fail on the intended iPhone/browser/network combination, the no-relay architecture needs to change before this can be treated as a playable iPhone MVP.
 
 ## GitHub Pages
 
