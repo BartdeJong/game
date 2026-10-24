@@ -1,5 +1,8 @@
 export const MAX_PLAYERS = 5;
 export const MIN_PLAYERS = 2;
+export const DEFAULT_WIN_POINTS = 80;
+export const MIN_WIN_POINTS = 10;
+export const MAX_WIN_POINTS = 200;
 
 export interface Tower {
   id: string;
@@ -11,8 +14,10 @@ export interface Player {
   name: string;
   score: number;
   bankedTowers: number;
+  roomWins: number;
   towers: Tower[];
   connected: boolean;
+  isBot?: boolean;
 }
 
 export type PlayerAction =
@@ -29,6 +34,7 @@ export interface RoundResolution {
   round: number;
   dice: [number, number];
   wind: number;
+  fallenCounts: Record<string, number>;
   actions: RoundAction[];
   banked: { playerId: string; towerHeight: number; points: number }[];
   toppled: { playerId: string; towerId: string; height: number; limit: number }[];
@@ -37,6 +43,7 @@ export interface RoundResolution {
 export interface MatchState {
   status: 'lobby' | 'choice' | 'resolution' | 'finished';
   round: number;
+  targetPoints: number;
   dice: [number, number] | null;
   players: Player[];
   history: RoundResolution[];
@@ -44,16 +51,24 @@ export interface MatchState {
   nextTowerId: number;
 }
 
-export function createMatch(host: Player): MatchState {
+export function createMatch(host: Player, targetPoints = DEFAULT_WIN_POINTS): MatchState {
+  validateTargetPoints(targetPoints);
   return {
     status: 'lobby',
     round: 0,
+    targetPoints,
     dice: null,
-    players: [{ ...host, towers: [], score: 0, bankedTowers: 0, connected: true }],
+    players: [{ ...host, towers: [], score: 0, bankedTowers: 0, roomWins: host.roomWins ?? 0, connected: true }],
     history: [],
     winnerIds: [],
     nextTowerId: 1,
   };
+}
+
+export function validateTargetPoints(targetPoints: number): void {
+  if (!Number.isInteger(targetPoints) || targetPoints < MIN_WIN_POINTS || targetPoints > MAX_WIN_POINTS) {
+    throw new Error(`The win target must be a whole number from ${MIN_WIN_POINTS} to ${MAX_WIN_POINTS}.`);
+  }
 }
 
 export function heightLimit(height: number): number {
@@ -79,7 +94,56 @@ export function beginGame(state: MatchState, dice: [number, number]): MatchState
   if (state.status !== 'lobby' || state.players.length < MIN_PLAYERS || state.players.length > MAX_PLAYERS) {
     throw new Error('The room needs 2–5 players before the game can start.');
   }
+  validateTargetPoints(state.targetPoints);
   return { ...state, status: 'choice', round: 1, dice: [...dice], history: [], winnerIds: [] };
+}
+
+export function returnToLobby(state: MatchState): MatchState {
+  if (state.status !== 'finished') {
+    throw new Error('The room lobby can only be reopened after a game finishes.');
+  }
+  return {
+    ...state,
+    status: 'lobby',
+    round: 0,
+    dice: null,
+    players: resetGamePlayers(state.players),
+    history: [],
+    winnerIds: [],
+    nextTowerId: 1,
+  };
+}
+
+export function beginRematch(state: MatchState, dice: [number, number]): MatchState {
+  if (state.status !== 'finished') {
+    throw new Error('A rematch can only start after a game finishes.');
+  }
+  if (
+    state.players.length < MIN_PLAYERS ||
+    state.players.length > MAX_PLAYERS ||
+    state.players.some((player) => !player.connected)
+  ) {
+    throw new Error('Remove disconnected players before starting another game.');
+  }
+  return {
+    ...state,
+    status: 'choice',
+    round: 1,
+    dice: [...dice],
+    players: resetGamePlayers(state.players),
+    history: [],
+    winnerIds: [],
+    nextTowerId: 1,
+  };
+}
+
+function resetGamePlayers(players: Player[]): Player[] {
+  return players.map((player) => ({
+    ...player,
+    score: 0,
+    bankedTowers: 0,
+    towers: [],
+  }));
 }
 
 export function beginNextRound(state: MatchState, dice: [number, number]): MatchState {
@@ -87,6 +151,23 @@ export function beginNextRound(state: MatchState, dice: [number, number]): Match
     throw new Error('The next round can only start after a round resolves.');
   }
   return { ...state, status: 'choice', round: state.round + 1, dice: [...dice] };
+}
+
+export function createPlayerView(state: MatchState, playerId: string): MatchState {
+  return {
+    ...state,
+    players: state.players.map((player) => ({
+      ...player,
+      towers: player.id === playerId ? player.towers.map((tower) => ({ ...tower })) : [],
+    })),
+    history: state.history.map((round) => ({
+      ...round,
+      actions: round.actions.filter((action) => action.playerId === playerId),
+      banked: round.banked.filter((banked) => banked.playerId === playerId),
+      toppled: round.toppled.filter((tower) => tower.playerId === playerId),
+      fallenCounts: { ...round.fallenCounts },
+    })),
+  };
 }
 
 export function resolveRound(
@@ -116,6 +197,7 @@ export function resolveRound(
     round: state.round,
     dice: [...state.dice],
     wind,
+    fallenCounts: Object.fromEntries(players.map((player) => [player.id, 0])),
     actions: [],
     banked: [],
     toppled: [],
@@ -148,6 +230,7 @@ export function resolveRound(
       const limit = heightLimit(tower.height);
       if (wind >= limit) {
         resolution.toppled.push({ playerId: player.id, towerId: tower.id, height: tower.height, limit });
+        resolution.fallenCounts[player.id] = (resolution.fallenCounts[player.id] ?? 0) + 1;
       } else {
         standing.push(tower);
       }
@@ -155,11 +238,16 @@ export function resolveRound(
     player.towers = standing;
   }
 
-  const gameEnded = players.some((player) => player.bankedTowers >= 3);
+  const gameEnded = players.some((player) => player.score >= state.targetPoints);
   const highScore = Math.max(...players.map((player) => player.score));
   const winnerIds = gameEnded
     ? players.filter((player) => player.score === highScore).map((player) => player.id)
     : [];
+  if (gameEnded) {
+    for (const player of players) {
+      if (winnerIds.includes(player.id)) player.roomWins += 1;
+    }
+  }
 
   return {
     ...state,

@@ -7,7 +7,8 @@ A small, mobile-first dice game for 2–5 players. The static TypeScript app is 
 1. Open the GitHub Pages URL on every device. The first page load needs internet.
 2. The host taps **Host a game**, enters a name, and shares the short room code.
 3. Each guest opens **Join a game**, enters a name and the room code. They join the same lobby automatically.
-4. Once 2–5 players are connected, the host starts the game. Keep the host page open and in the foreground.
+4. The host sets a points target (default 80, configurable from 10 to 200), and can add robots to play solo or fill open seats. Once there are 2–5 human and robot players, the host starts the game. Keep the host page open and in the foreground.
+5. After each completed round, the next shared dice roll starts automatically after a 3-second results pause. After a game, the host can start a rematch or return to the same room lobby. Room win totals carry over between games.
 
 Room codes are eight characters, displayed in two groups for readability. PeerJS Cloud is used only to introduce the browsers and exchange WebRTC setup messages; the game is configured for direct WebRTC connections with STUN and no TURN relay. The room code is an invite, so share it only with players in your game. Internet access is required for room setup. Using the same Wi‑Fi is recommended, but network isolation or firewall restrictions can still prevent a direct connection. The free shared signaling service may be unavailable or rate-limited; it is not an availability guarantee.
 
@@ -16,13 +17,13 @@ The host browser generates the shared dice, validates actions, and owns the live
 ## Rules
 
 - Every round uses one shared roll of two six-sided dice. Their sum is the wind.
-- After the roll is shown, each player secretly commits one move: start a tower, add one floor to an unbanked tower, or bank a tower.
+- After the roll is shown, each player secretly commits one move from their own visual tower board: start a tower, add one floor to an unbanked tower, or bank a tower.
 - Once everyone commits, all moves are revealed together. Banking protects the tower and scores `height × (height + 1) / 2`.
 - Every unbanked tower is then exposed to that round's wind. It topples if the wind is at least its limit.
 - Height limits are: 1 → 12, 2 → 11, 3 → 10, 4 → 9, 5 → 8, 6 → 7, and 7+ → 6.
-- The round in which anyone banks a third tower is the final round. Highest score wins; equal scores share the victory.
+- The host sets a room target from 10 to 200 points (default 80). After a round, the first player at or above the target wins; the highest score wins, with tied high scores sharing the victory. Each tied winner earns one room win.
 
-The roll is revealed before choices, and a newly started or extended tower is exposed to that wind. The in-game build log shows each roll, move, bank, and collapse.
+The roll is revealed before choices, and a newly started or extended tower is exposed to that wind. Players see their own towers and every player's score; opponents' towers and detailed moves stay hidden. After each round, the game shows how many towers fell for each player. Robots choose and submit moves automatically. The in-game build log shows each roll, your own move and bank, and the per-player fall counts. Room win totals remain with the players when the host starts another game in the same room.
 
 ## Run and test locally
 
@@ -43,6 +44,7 @@ The dev server is for development only and does not create a LAN room server. To
 - Enter the host's short room code on one or more guest iPhones and confirm they join automatically.
 - Repeat pairing for up to four guests, then confirm everyone sees the same roll and resolved score.
 - Confirm choices remain hidden until all connected players commit.
+- Confirm the host can change the default 80-point target in the lobby, the next round begins automatically after 3 seconds, and room win totals carry into a same-room rematch.
 - Background and resume Safari, interrupt Wi‑Fi, and close a guest tab; verify status messages and host removal behavior.
 - Confirm room codes work with lowercase input and optional hyphens/spaces.
 

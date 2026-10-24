@@ -1,4 +1,9 @@
-import type { MatchState, PlayerAction } from './game';
+import {
+  MAX_WIN_POINTS,
+  MIN_WIN_POINTS,
+  type MatchState,
+  type PlayerAction,
+} from './game';
 
 export type PeerMessage =
   | { type: 'join'; playerId: string; name: string }
@@ -74,6 +79,11 @@ function isMatchState(value: unknown): value is MatchState {
       value.status !== 'finished') ||
     !('round' in value) ||
     typeof value.round !== 'number' ||
+    !('targetPoints' in value) ||
+    typeof value.targetPoints !== 'number' ||
+    !Number.isInteger(value.targetPoints) ||
+    value.targetPoints < MIN_WIN_POINTS ||
+    value.targetPoints > MAX_WIN_POINTS ||
     !('players' in value) ||
     !Array.isArray(value.players) ||
     !('history' in value) ||
@@ -86,5 +96,32 @@ function isMatchState(value: unknown): value is MatchState {
   ) {
     return false;
   }
+  if (
+    !value.history.every((round) => isRoundHistoryEntry(round)) ||
+    value.players.some((player) => !isPlayerState(player))
+  ) {
+    return false;
+  }
   return value.dice === null || (Array.isArray(value.dice) && value.dice.length === 2);
+}
+
+function isPlayerState(value: unknown): boolean {
+  return typeof value === 'object' &&
+    value !== null &&
+    'id' in value &&
+    typeof value.id === 'string' &&
+    'roomWins' in value &&
+    typeof value.roomWins === 'number' &&
+    Number.isInteger(value.roomWins) &&
+    value.roomWins >= 0;
+}
+
+function isRoundHistoryEntry(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || !('fallenCounts' in value)) return false;
+  const counts = value.fallenCounts;
+  return typeof counts === 'object' &&
+    counts !== null &&
+    !Array.isArray(counts) &&
+    Object.values(counts).every((count) =>
+      typeof count === 'number' && Number.isInteger(count) && count >= 0);
 }

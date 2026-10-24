@@ -9,5 +9,5 @@
     "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["src/game.ts", "src/room-code.ts"]
+  "include": ["src/bot.ts", "src/game.ts", "src/room-code.ts"]
 }

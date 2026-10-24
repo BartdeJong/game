@@ -1,17 +1,24 @@
 import {
+  beginRematch,
   beginGame,
   beginNextRound,
   createMatch,
+  createPlayerView,
   heightLimit,
   isLegalAction,
+  MAX_WIN_POINTS,
   MAX_PLAYERS,
+  MIN_WIN_POINTS,
   MIN_PLAYERS,
   resolveRound,
+  returnToLobby,
   towerPoints,
+  validateTargetPoints,
   type MatchState,
   type Player,
   type PlayerAction,
 } from './game';
+import { chooseBotAction } from './bot';
 import { parseMessage, type PeerMessage } from './protocol';
 import { Peer, PeerError, PeerErrorType, type DataConnection } from 'peerjs';
 import { createRoomCode, formatRoomCode, normalizeRoomCode } from './room-code';
@@ -37,6 +44,7 @@ let guestName = '';
 let submitted = new Map<string, PlayerAction>();
 let submittedCount = 0;
 let guestSubmitted = false;
+let selectedAction: PlayerAction | null = null;
 let hostConnections = new Set<HostConnection>();
 let hostPeer: Peer | null = null;
 let hostRoomCode = '';
@@ -46,6 +54,9 @@ let guestPeer: Peer | null = null;
 let guestChannel: DataConnection | null = null;
 let notice = '';
 let failure = '';
+let autoRollTimer: number | null = null;
+
+const AUTO_ROLL_DELAY_MS = 3_000;
 
 const PEER_OPTIONS = {
   host: '0.peerjs.com',
@@ -148,6 +159,7 @@ function connectedPlayers(state: MatchState): Player[] {
 function showNotice(message: string): void {
   notice = message;
   failure = '';
+  selectedAction = null;
   render();
 }
 
@@ -245,7 +257,7 @@ function renderHost(): string {
   const state = hostState;
   if (state.status !== 'lobby') return renderGame(state, true);
   return `<section class="game-panel">
-    <div class="section-heading"><div><p class="eyebrow">HOST LOBBY</p><h1>Your skyline <em>starts here.</em></h1></div><span class="pill">${connectedPlayers(state).length}/${MAX_PLAYERS} players</span></div>
+    <div class="section-heading"><div><p class="eyebrow">HOST LOBBY</p><h1>Your skyline <em>starts here.</em></h1></div><span class="pill">${state.players.length}/${MAX_PLAYERS} players</span></div>
     <p class="lead-small">You are the host and a player. Share this short room code; guests enter it on their devices.</p>
     <div class="pair-card room-code-card">
       <p class="eyebrow">ROOM CODE</p>
@@ -256,7 +268,16 @@ function renderHost(): string {
           ${creatingRoomCode ? '' : '<button class="button button-secondary" data-action="retry-room-code" type="button">Try again</button>'}`}
       <p class="quiet-note">Share it only with players in your game. The host page must stay open.</p>
     </div>
+    <div class="target-setting-card">
+      <label for="target-points">Points needed to win</label>
+      <div class="target-input-row"><input id="target-points" type="number" min="${MIN_WIN_POINTS}" max="${MAX_WIN_POINTS}" step="1" value="${state.targetPoints}" /><span>points</span></div>
+      <p class="quiet-note">The first player to reach this score wins after the round resolves.</p>
+    </div>
     <div class="player-list">${state.players.map((player) => playerMarkup(player, true)).join('')}</div>
+    <div class="lobby-robot-control">
+      <button class="button button-secondary" data-action="add-robot" type="button" ${state.players.length >= MAX_PLAYERS ? 'disabled' : ''}>＋ Add a robot</button>
+      <p class="quiet-note">Robots choose automatically. Add one to play solo or mix robots with guests.</p>
+    </div>
     <div class="pair-area">
       ${connectedPlayers(state).length >= MIN_PLAYERS
         ? `<button class="button button-primary button-full start-button" data-action="start-game" type="button" ${creatingRoomCode || !hostRoomCode ? 'disabled' : ''}>Start game <span aria-hidden="true">→</span></button>`
@@ -276,7 +297,8 @@ function renderGuest(): string {
   }
   if (guestState.status === 'lobby') {
     return `<section class="game-panel">
-      <div class="section-heading"><div><p class="eyebrow">CONNECTED TO HOST</p><h1>Waiting for<br /><em>liftoff.</em></h1></div><span class="pill">${connectedPlayers(guestState).length}/${MAX_PLAYERS} players</span></div>
+      <div class="section-heading"><div><p class="eyebrow">CONNECTED TO HOST</p><h1>Waiting for<br /><em>liftoff.</em></h1></div><span class="pill">${guestState.players.length}/${MAX_PLAYERS} players</span></div>
+      <p class="lead-small">Win target: <strong>${guestState.targetPoints} points</strong></p>
       <div class="player-list">${guestState.players.map((player) => playerMarkup(player, false)).join('')}</div>
       <p class="lead-small">The host will start the game when everyone is ready. Keep this page open.</p>
       <button class="button button-secondary" data-action="cancel-guest" type="button">Leave game</button>
@@ -290,8 +312,9 @@ function playerMarkup(player: Player, hostControls: boolean): string {
   const hostPlayerId = hostState?.players[0]?.id ?? guestState?.players[0]?.id;
   return `<article class="player-row ${player.connected ? '' : 'player-offline'}">
     <span class="player-avatar" aria-hidden="true">${escapeHtml(player.name.slice(0, 1).toUpperCase())}</span>
-    <span class="player-name">${escapeHtml(player.name)}${me ? ' <span class="you-tag">YOU</span>' : ''}${player.id === hostPlayerId ? ' <span class="host-tag">HOST</span>' : ''}</span>
-    <span class="player-meta">${player.connected ? 'Connected' : 'Disconnected'}</span>
+    <span class="player-name">${escapeHtml(player.name)}${me ? ' <span class="you-tag">YOU</span>' : ''}${player.id === hostPlayerId ? ' <span class="host-tag">HOST</span>' : ''}<span class="room-win-tag">${player.roomWins} room win${player.roomWins === 1 ? '' : 's'}</span></span>
+    <span class="player-meta">${player.isBot ? 'Robot' : player.connected ? 'Connected' : 'Disconnected'}</span>
+    ${hostControls && player.isBot ? `<button class="text-button danger-text" data-action="remove-robot" data-player="${escapeHtml(player.id)}" type="button">Remove</button>` : ''}
     ${hostControls && player.id !== hostId && !player.connected ? `<button class="text-button danger-text" data-action="remove-player" data-player="${escapeHtml(player.id)}" type="button">Remove</button>` : ''}
   </article>`;
 }
@@ -300,71 +323,130 @@ function renderGame(state: MatchState, isHost: boolean): string {
   const playerId = isHost ? hostId : guestId;
   const me = state.players.find((player) => player.id === playerId);
   const isSubmitted = isHost ? submitted.has(hostId) : guestSubmitted;
-  const choices = state.status === 'choice' && me && !isSubmitted
-    ? actionForm(me)
-    : state.status === 'choice'
-      ? `<div class="wait-card"><span class="spinner" aria-hidden="true"></span><div><strong>${isSubmitted ? 'Choice locked in' : 'Choose your move'}</strong><p>${isSubmitted ? `Waiting for other players · ${submittedCount}/${state.players.length} committed` : `Waiting for your choice · ${submittedCount}/${state.players.length} committed`}</p></div></div>`
-      : '';
+  const choices = state.status === 'choice'
+    ? `<div class="wait-card"><span class="spinner" aria-hidden="true"></span><div><strong>${isSubmitted ? 'Choice locked in' : 'Choose your move'}</strong><p>${isSubmitted ? `Waiting for other players · ${submittedCount}/${state.players.length} ready` : me ? `Your move is private · ${submittedCount}/${state.players.length} ready` : `Waiting for your move · ${submittedCount}/${state.players.length} ready`}</p></div></div>`
+    : '';
 
   return `<section class="game-panel board-panel">
     <div class="section-heading"><div><p class="eyebrow">${state.status === 'finished' ? 'GAME OVER' : `ROUND ${state.round}`}</p><h1>${state.status === 'finished' ? 'The skyline is <em>set.</em>' : 'Build or <em>bank?</em>'}</h1></div>
-      ${state.status === 'choice' && state.dice ? `<div class="wind-card"><span>WIND</span><div class="dice-pair"><b>${state.dice[0]}</b><b>${state.dice[1]}</b></div><strong>${state.dice[0] + state.dice[1]}</strong></div>` : ''}
+      ${state.dice ? `<div class="wind-card"><span>ROUND ${state.round} WIND</span><div class="dice-pair">${dieMarkup(state.dice[0])}${dieMarkup(state.dice[1])}</div><strong>${state.dice[0] + state.dice[1]}</strong><small>wind strength</small></div>` : ''}
     </div>
-    ${state.status === 'choice' ? `<p class="lead-small">The wind is known. Pick one move before it sweeps through every unbanked tower.</p>` : ''}
+    ${state.status === 'choice' ? `<p class="lead-small">Reach ${state.targetPoints} points to win. The wind is known; choose one move before it sweeps through every unbanked tower.</p>` : ''}
+    ${me ? towerBoardMarkup(me, state, state.status === 'choice' && !isSubmitted) : ''}
     <section class="scoreboard" aria-label="Players and scores">
       ${state.players.map((player) => `<article class="score-card ${player.id === playerId ? 'score-card-me' : ''}">
-        <div class="score-card-top"><span class="player-avatar">${escapeHtml(player.name.slice(0, 1).toUpperCase())}</span><span class="score-name">${escapeHtml(player.name)}${player.id === playerId ? ' <span class="you-tag">YOU</span>' : ''}${player.connected ? '' : ' <span class="host-tag">OFFLINE</span>'}</span></div>
+        <div class="score-card-top"><span class="player-avatar">${escapeHtml(player.name.slice(0, 1).toUpperCase())}</span><span class="score-name">${escapeHtml(player.name)}${player.id === playerId ? ' <span class="you-tag">YOU</span>' : ''}${player.isBot ? ' <span class="robot-tag">ROBOT</span>' : ''}${!player.connected ? ' <span class="host-tag">OFFLINE</span>' : ''}</span></div>
         <div class="score-number">${player.score}<small> pts</small></div>
-        <div class="banked-label">${player.bankedTowers}/3 towers banked</div>
-        <div class="tower-list">${player.towers.length ? player.towers.map((tower) => {
-          const limit = heightLimit(tower.height);
-          const atRisk = state.dice && state.status === 'choice' && state.dice[0] + state.dice[1] >= limit;
-          return `<div class="tower-chip ${atRisk ? 'tower-risk' : ''}"><span class="tower-icon" aria-hidden="true">▥</span><span>Height ${tower.height}</span><span class="tower-limit">topples at ${limit}+</span></div>`;
-        }).join('') : '<span class="empty-towers">No unbanked towers</span>'}</div>
+        <div class="room-win-count">${player.roomWins} room win${player.roomWins === 1 ? '' : 's'}</div>
         ${isHost && player.id !== hostId && !player.connected ? `<button class="text-button danger-text" data-action="remove-player" data-player="${escapeHtml(player.id)}" type="button">Remove disconnected player</button>` : ''}
       </article>`).join('')}
     </section>
     ${choices}
-    ${state.status === 'resolution' ? `<section class="resolution-card"><p class="eyebrow">ROUND ${state.history.at(-1)?.round ?? state.round} COMPLETE</p><h2>The wind has passed.</h2><p>${state.history.at(-1)?.toppled.length ? `${state.history.at(-1)!.toppled.length} tower${state.history.at(-1)!.toppled.length === 1 ? '' : 's'} toppled.` : 'Every tower held.'}</p>
-      ${isHost ? `<button class="button button-primary button-full" data-action="next-round" type="button">Roll next round <span aria-hidden="true">→</span></button>` : '<p class="quiet-note">The host will roll the next wind.</p>'}</section>` : ''}
-    ${state.status === 'finished' ? `<section class="resolution-card winner-card"><p class="eyebrow">FINAL STANDINGS</p><h2>${state.winnerIds.length > 1 ? 'A shared victory.' : `${escapeHtml(state.players.find((player) => player.id === state.winnerIds[0])?.name ?? 'A player')} wins!`}</h2><p>${state.winnerIds.length > 1 ? 'The tallest scores are tied.' : 'The skyline belongs to you.'}</p>${isHost ? '<button class="button button-primary button-full" data-action="new-game" type="button">Host another game</button>' : '<p class="quiet-note">The host can start another room.</p>'}</section>` : ''}
+    ${state.status === 'resolution' ? `<section class="resolution-card"><p class="eyebrow">ROUND ${state.history.at(-1)?.round ?? state.round} COMPLETE</p><h2>The wind has passed.</h2>${state.history.at(-1) ? fallSummaryMarkup(state.history.at(-1)!, state, playerId) : ''}
+      <p class="quiet-note">The next round rolls automatically in 3 seconds.</p></section>` : ''}
+    ${state.status === 'finished' ? `<section class="resolution-card winner-card"><p class="eyebrow">FINAL STANDINGS · TARGET ${state.targetPoints}</p><h2>${state.winnerIds.length > 1 ? 'A shared victory.' : `${escapeHtml(state.players.find((player) => player.id === state.winnerIds[0])?.name ?? 'A player')} wins!`}</h2><p>${state.winnerIds.length > 1 ? 'The tied winners each earn one room win.' : 'The winner earns one room win.'}</p>${isHost
+      ? `<div class="rematch-actions"><button class="button button-primary button-full" data-action="rematch" type="button" ${state.players.length < MIN_PLAYERS || state.players.some((player) => !player.connected) ? 'disabled' : ''}>Play again in this room</button><button class="button button-secondary button-full" data-action="return-lobby" type="button">Return to room lobby</button></div>`
+      : '<p class="quiet-note">The host can start another game in this room or return to the lobby.</p>'}</section>` : ''}
     <section class="history-card"><div class="history-heading"><p class="eyebrow">THE BUILD LOG</p><span>${state.history.length} round${state.history.length === 1 ? '' : 's'}</span></div>
-      ${state.history.length ? `<ol class="history-list">${[...state.history].reverse().map((round) => historyMarkup(round, state)).join('')}</ol>` : '<p class="quiet-note">Every roll, move, and toppled tower will appear here.</p>'}
+      ${state.history.length ? `<ol class="history-list">${[...state.history].reverse().map((round) => historyMarkup(round, state, playerId)).join('')}</ol>` : '<p class="quiet-note">Each round’s wind and tower falls will appear here.</p>'}
     </section>
     ${state.status !== 'finished' ? `<details class="help-details"><summary>Rules &amp; wind limits</summary>${rulesMarkup()}</details>` : ''}
   </section>`;
 }
 
-function actionForm(player: Player): string {
-  const options = [
-    '<option value="new">Start a new tower · height 1</option>',
-    ...player.towers.flatMap((tower) => [
-      `<option value="build|${escapeHtml(tower.id)}">Build tower ${tower.height} → height ${tower.height + 1}</option>`,
-      `<option value="bank|${escapeHtml(tower.id)}">Bank tower ${tower.height} · +${towerPoints(tower.height)} points</option>`,
-    ]),
-  ];
-  return `<form id="action-form" class="action-card">
-    <label for="player-action">Your move</label>
-    <select id="player-action" name="action">${options.join('')}</select>
-    <button class="button button-primary button-full" type="submit">Commit move</button>
-    <p class="quiet-note">Your move stays hidden until every player commits.</p>
-  </form>`;
+function dieMarkup(value: number): string {
+  const positions: Record<number, number[]> = {
+    1: [4],
+    2: [0, 8],
+    3: [0, 4, 8],
+    4: [0, 2, 6, 8],
+    5: [0, 2, 4, 6, 8],
+    6: [0, 2, 3, 5, 6, 8],
+  };
+  return `<span class="die" aria-label="Die shows ${value}">${Array.from({ length: 9 }, (_, index) => `<i class="${positions[value]?.includes(index) ? 'die-dot' : ''}"></i>`).join('')}</span>`;
 }
 
-function historyMarkup(round: MatchState['history'][number], state: MatchState): string {
+function actionMatches(left: PlayerAction | null, right: PlayerAction): boolean {
+  return left?.kind === right.kind &&
+    (left.kind === 'new' || (right.kind !== 'new' && left.towerId === right.towerId));
+}
+
+function moveChoiceMarkup(action: PlayerAction, label: string, detail: string): string {
+  const selected = actionMatches(selectedAction, action);
+  const towerAttribute = action.kind === 'new' ? '' : ` data-tower="${escapeHtml(action.towerId)}"`;
+  return `<button class="move-choice ${selected ? 'move-selected' : ''}" data-action="select-move" data-kind="${action.kind}"${towerAttribute} type="button" aria-pressed="${selected}">
+    <span>${label}</span><small>${detail}</small>
+  </button>`;
+}
+
+function towerBoardMarkup(player: Player, state: MatchState, canChoose: boolean): string {
+  const wind = state.dice ? state.dice[0] + state.dice[1] : null;
+  const towerCards = player.towers.map((tower) => {
+    const limit = heightLimit(tower.height);
+    const atRisk = wind !== null && wind >= limit;
+    const floors = Array.from({ length: tower.height }, (_, floor) => `<i class="tower-floor" style="--floor:${floor}"></i>`).join('');
+    return `<article class="own-tower-card ${atRisk ? 'tower-risk' : ''}">
+      <div class="tower-visual ${atRisk ? 'tower-visual-risk' : ''}" role="img" aria-label="Your tower, height ${tower.height}">${floors}</div>
+      <div class="own-tower-details"><strong>Height ${tower.height}</strong><span>Topples at wind ${limit}+</span></div>
+      ${canChoose ? `<div class="tower-moves">
+        ${moveChoiceMarkup({ kind: 'build', towerId: tower.id }, 'Build', `to height ${tower.height + 1}${wind !== null && wind >= heightLimit(tower.height + 1) ? ' · at risk' : ''}`)}
+        ${moveChoiceMarkup({ kind: 'bank', towerId: tower.id }, 'Bank', `+${towerPoints(tower.height)} points`)}
+      </div>` : ''}
+    </article>`;
+  }).join('');
+  const newTowerCard = `<article class="own-tower-card new-tower-card">
+      <div class="tower-visual tower-visual-empty" aria-hidden="true"><span>＋</span></div>
+      <div class="own-tower-details"><strong>New tower</strong><span>Start at height 1</span></div>
+      ${canChoose ? moveChoiceMarkup({ kind: 'new' }, 'Start tower', 'Add a new structure') : ''}
+    </article>`;
+  const moveSelection = selectedAction;
+  let commitLabel = 'Choose a move above';
+  if (moveSelection?.kind === 'new') {
+    commitLabel = 'Start a new tower';
+  } else if (moveSelection) {
+    const selectedTower = player.towers.find((tower) => tower.id === moveSelection.towerId);
+    commitLabel = moveSelection.kind === 'build'
+      ? `Build tower to height ${(selectedTower?.height ?? 0) + 1}`
+      : `Bank for +${towerPoints(selectedTower?.height ?? 1)} points`;
+  }
+  return `<section class="tower-board-panel" aria-label="Your towers">
+    <div class="tower-board-heading"><div><p class="eyebrow">YOUR SKYLINE</p><h2>Your towers</h2></div><span>${player.bankedTowers} banked</span></div>
+    ${player.towers.length ? '' : '<p class="quiet-note">No unbanked towers yet. Start one below.</p>'}
+    <div class="tower-board">${towerCards}${newTowerCard}</div>
+    ${canChoose ? `<div class="commit-move-panel"><p>Selected move: <strong>${escapeHtml(commitLabel)}</strong></p><button class="button button-primary button-full" data-action="commit-move" type="button" ${selectedAction ? '' : 'disabled'}>Commit move</button><p class="quiet-note">Your selection stays private until you commit.</p></div>` : ''}
+  </section>`;
+}
+
+function fallSummaryMarkup(round: MatchState['history'][number], state: MatchState, viewerId: string): string {
+  return `<ul class="fall-summary">${state.players.map((player) => {
+    const count = round.fallenCounts[player.id] ?? 0;
+    const label = player.id === viewerId ? 'Your towers' : escapeHtml(player.name);
+    return `<li><span>${label}</span><strong>${count} tower${count === 1 ? '' : 's'} fell</strong></li>`;
+  }).join('')}</ul>`;
+}
+
+function historyMarkup(round: MatchState['history'][number], state: MatchState, viewerId: string): string {
   const name = (id: string) => state.players.find((player) => player.id === id)?.name ?? 'A player';
-  const actionText = round.actions.map((action) => `${name(action.playerId)} ${action.description.toLowerCase()}`).join(' · ');
-  const bankedText = round.banked.map((banked) => `${name(banked.playerId)} banked +${banked.points}`).join(' · ');
-  const toppledText = round.toppled.map((tower) => `${name(tower.playerId)}'s height-${tower.height} tower toppled`).join(' · ');
+  const ownAction = round.actions.find((action) => action.playerId === viewerId);
+  const ownBanked = round.banked.find((banked) => banked.playerId === viewerId);
+  const ownToppled = round.toppled.filter((tower) => tower.playerId === viewerId);
+  const personalSummary = [
+    ownAction ? `You ${ownAction.description.toLowerCase()}` : '',
+    ownBanked ? `You banked +${ownBanked.points}` : '',
+    ownToppled.length ? `Your tower${ownToppled.length === 1 ? '' : 's'} fell` : '',
+  ].filter(Boolean).join(' · ') || 'Your towers held.';
+  const otherFallSummary = state.players
+    .filter((player) => player.id !== viewerId)
+    .map((player) => `${name(player.id)}: ${round.fallenCounts[player.id] ?? 0} fell`)
+    .join(' · ');
   return `<li><div class="history-round"><b>R${round.round}</b><span class="history-dice">${round.dice[0]} + ${round.dice[1]} = ${round.wind}</span></div>
-    <p>${escapeHtml(actionText || 'No moves')}</p>${bankedText ? `<p class="history-good">${escapeHtml(bankedText)}</p>` : ''}
-    ${toppledText ? `<p class="history-bad">${escapeHtml(toppledText)}</p>` : '<p class="history-good">The towers held.</p>'}</li>`;
+    <p>${escapeHtml(personalSummary)}</p>${otherFallSummary ? `<p class="history-bad">${escapeHtml(otherFallSummary)}</p>` : ''}</li>`;
 }
 
 function rulesMarkup(): string {
-  return `<p>Each round, the shared wind is two dice added together. After seeing it, everyone simultaneously starts a tower, adds one floor, or banks one tower. Banking scores 1 + 2 + … + height and protects that tower. All other towers face the wind after the move. The game ends after a round in which someone banks a third tower; highest score wins, ties share the win.</p>
+  return `<p>The host sets a room win target from ${MIN_WIN_POINTS} to ${MAX_WIN_POINTS} points before each game. The first player to reach or exceed it wins after that round resolves. Each round, the shared wind is two dice added together. After seeing it, everyone simultaneously starts a tower, adds one floor, or banks one tower. Banking scores 1 + 2 + … + height and protects that tower. All other towers face the wind after the move. Tied high scores share the win, and each tied winner adds one room win.</p>
     <div class="limit-table"><span>Height</span><span>Topples at wind</span>${[1, 2, 3, 4, 5, 6, 7].map((height) => `<b>${height === 7 ? '7+' : height}</b><b>${heightLimit(height)}+</b>`).join('')}</div>
-    <p class="quiet-note">The roll is revealed before choices. A new or extended tower is exposed to that same wind.</p>`;
+    <p class="quiet-note">The roll is revealed before choices. A new or extended tower is exposed to that same wind. When a round resolves, the next roll happens automatically after 3 seconds.</p>`;
 }
 
 async function copyCode(selector: string, successMessage: string): Promise<void> {
@@ -415,6 +497,7 @@ function messageForConnection(connection: HostConnection, message: PeerMessage):
       name: message.name.trim(),
       score: 0,
       bankedTowers: 0,
+      roomWins: 0,
       towers: [],
       connected: true,
     });
@@ -486,10 +569,20 @@ function broadcastState(): void {
     if (connection.playerId && connection.channel.open) {
       connection.channel.send(JSON.stringify({
         type: 'state',
-        state: hostState,
+        state: createPlayerView(hostState, connection.playerId),
         submittedCount,
         playerId: connection.playerId,
       }));
+    }
+  }
+}
+
+function submitBotActions(): void {
+  if (!hostState || hostState.status !== 'choice' || !hostState.dice) return;
+  const wind = hostState.dice[0] + hostState.dice[1];
+  for (const player of hostState.players) {
+    if (player.isBot && !submitted.has(player.id)) {
+      submitted.set(player.id, chooseBotAction(player, wind));
     }
   }
 }
@@ -506,9 +599,24 @@ function maybeResolveRound(): void {
     submittedCount = 0;
     broadcastState();
     render();
+    if (hostState.status === 'resolution') scheduleAutomaticNextRound();
   } catch (error) {
     showFailure(error instanceof Error ? error.message : 'Could not resolve this round.');
   }
+}
+
+function scheduleAutomaticNextRound(): void {
+  if (autoRollTimer !== null) window.clearTimeout(autoRollTimer);
+  autoRollTimer = window.setTimeout(() => {
+    autoRollTimer = null;
+    if (screen !== 'host' || !hostState || hostState.status !== 'resolution') return;
+    hostState = beginNextRound(hostState, rollDice());
+    submitted.clear();
+    submittedCount = 0;
+    selectedAction = null;
+    submitBotActions();
+    maybeResolveRound();
+  }, AUTO_ROLL_DELAY_MS);
 }
 
 function commitAction(playerId: string, action: PlayerAction): void {
@@ -520,10 +628,12 @@ function commitAction(playerId: string, action: PlayerAction): void {
     return;
   }
   submitted.set(playerId, action);
+  if (playerId === hostId) selectedAction = null;
   if (screen === 'host') {
     submittedCount = submitted.size;
     maybeResolveRound();
   } else {
+    selectedAction = null;
     guestChannel?.send(JSON.stringify({ type: 'action', playerId, action }));
     guestSubmitted = true;
     showNotice('Move committed. Waiting for the other players.');
@@ -611,6 +721,7 @@ function connectGuest(roomCode: string): void {
   guestPeer = peer;
   guestState = null;
   guestSubmitted = false;
+  selectedAction = null;
   guestId = randomId();
   screen = 'guest';
   notice = 'Connecting to the room…';
@@ -646,7 +757,10 @@ function connectGuest(roomCode: string): void {
           const previousRound = guestState?.round;
           guestState = message.state;
           submittedCount = message.submittedCount;
-          if (guestState.status !== 'choice' || guestState.round !== previousRound) guestSubmitted = false;
+          if (guestState.status !== 'choice' || guestState.round !== previousRound) {
+            guestSubmitted = false;
+            selectedAction = null;
+          }
           failure = '';
           notice = '';
           screen = 'guest';
@@ -696,7 +810,39 @@ function removePlayer(playerId: string): void {
   else render();
 }
 
+function addRobot(): void {
+  if (!hostState || hostState.status !== 'lobby' || hostState.players.length >= MAX_PLAYERS) return;
+  const robotNames = new Set(hostState.players.filter((player) => player.isBot).map((player) => player.name));
+  let number = 1;
+  while (robotNames.has(`Robot ${number}`)) number += 1;
+  hostState.players.push({
+    id: `robot-${randomId()}`,
+    name: `Robot ${number}`,
+    score: 0,
+    bankedTowers: 0,
+    roomWins: 0,
+    towers: [],
+    connected: true,
+    isBot: true,
+  });
+  notice = 'Robot added to the lobby.';
+  broadcastState();
+  render();
+}
+
+function removeRobot(playerId: string): void {
+  if (!hostState || hostState.status !== 'lobby') return;
+  const player = hostState.players.find((item) => item.id === playerId && item.isBot);
+  if (!player) return;
+  hostState.players = hostState.players.filter((item) => item.id !== playerId);
+  notice = `${player.name} removed from the lobby.`;
+  broadcastState();
+  render();
+}
+
 function resetRoom(): void {
+  if (autoRollTimer !== null) window.clearTimeout(autoRollTimer);
+  autoRollTimer = null;
   roomGeneration += 1;
   creatingRoomCode = false;
   hostState = null;
@@ -710,11 +856,29 @@ function resetRoom(): void {
   guestPeer = null;
   guestChannel = null;
   submitted.clear();
+  submittedCount = 0;
+  guestSubmitted = false;
+  selectedAction = null;
   screen = 'home';
   notice = '';
   failure = '';
   render();
 }
+
+app.addEventListener('change', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.id !== 'target-points') return;
+  if (!hostState || hostState.status !== 'lobby') return;
+  try {
+    const points = Number(target.value);
+    validateTargetPoints(points);
+    hostState.targetPoints = points;
+    broadcastState();
+    showNotice(`Win target set to ${points} points.`);
+  } catch (error) {
+    showFailure(error instanceof Error ? error.message : 'Could not update the win target.');
+  }
+});
 
 app.addEventListener('click', async (event) => {
   const target = event.target;
@@ -745,6 +909,29 @@ app.addEventListener('click', async (event) => {
       await copyCode('#host-room-code', 'Room code copied.');
     } else if (action === 'retry-room-code') {
       await createHostPeer();
+    } else if (action === 'add-robot') {
+      addRobot();
+    } else if (action === 'remove-robot' && button.dataset.player) {
+      removeRobot(button.dataset.player);
+    } else if (action === 'select-move') {
+      const kind = button.dataset.kind;
+      const move: PlayerAction | null = kind === 'new'
+        ? { kind: 'new' }
+        : kind === 'build' && button.dataset.tower
+          ? { kind: 'build', towerId: button.dataset.tower }
+          : kind === 'bank' && button.dataset.tower
+            ? { kind: 'bank', towerId: button.dataset.tower }
+            : null;
+      const playerId = screen === 'host' ? hostId : guestId;
+      const player = currentState()?.players.find((item) => item.id === playerId);
+      if (!move || !player || !isLegalAction(player, move)) {
+        throw new Error('That move is no longer available. Choose another move.');
+      }
+      selectedAction = move;
+      render();
+    } else if (action === 'commit-move') {
+      if (!selectedAction) throw new Error('Choose a move on your skyline first.');
+      commitAction(screen === 'host' ? hostId : guestId, selectedAction);
     } else if (action === 'start-game' && hostState) {
       if (connectedPlayers(hostState).length < MIN_PLAYERS) {
         showFailure('At least two connected players are needed.');
@@ -757,18 +944,27 @@ app.addEventListener('click', async (event) => {
       hostState = beginGame(hostState, rollDice());
       submitted.clear();
       submittedCount = 0;
-      broadcastState();
-      render();
-    } else if (action === 'next-round' && hostState) {
-      hostState = beginNextRound(hostState, rollDice());
+      selectedAction = null;
+      submitBotActions();
+      maybeResolveRound();
+    } else if (action === 'rematch' && hostState) {
+      hostState = beginRematch(hostState, rollDice());
       submitted.clear();
       submittedCount = 0;
+      selectedAction = null;
+      submitBotActions();
+      maybeResolveRound();
+    } else if (action === 'return-lobby' && hostState) {
+      if (autoRollTimer !== null) window.clearTimeout(autoRollTimer);
+      autoRollTimer = null;
+      hostState = returnToLobby(hostState);
+      submitted.clear();
+      submittedCount = 0;
+      selectedAction = null;
       broadcastState();
       render();
     } else if (action === 'remove-player' && button.dataset.player) {
       removePlayer(button.dataset.player);
-    } else if (action === 'new-game') {
-      resetRoom();
     } else if (action === 'cancel-guest') {
       const peer = guestPeer;
       guestPeer = null;
@@ -780,7 +976,7 @@ app.addEventListener('click', async (event) => {
       peer?.destroy();
       render();
     } else if (action === 'rules') {
-      window.alert('Each round, everyone starts a tower, adds a floor, or banks one. The shared 2d6 wind is revealed first. After all players commit, banking scores 1 + 2 + … + height and protects that tower; every other tower topples when the wind reaches its height limit. The game ends after someone banks a third tower. Highest score wins.');
+      window.alert(`The host sets the win target before each game. The first player to reach or exceed that score wins after the round resolves. Each round, everyone starts a tower, adds a floor, or banks one. The shared 2d6 wind is revealed first. Banking scores 1 + 2 + … + height and protects that tower; every other tower topples when the wind reaches its height limit. Tied high scores share the win and each add one room win. The next round rolls automatically after 3 seconds.`);
     }
   } catch (error) {
     showFailure(error instanceof Error ? error.message : 'That action could not be completed.');
@@ -802,6 +998,7 @@ app.addEventListener('submit', async (event) => {
         name: playerName,
         score: 0,
         bankedTowers: 0,
+        roomWins: 0,
         towers: [],
         connected: true,
       });
@@ -816,16 +1013,6 @@ app.addEventListener('submit', async (event) => {
       if (!guestName || guestName.length > 18) throw new Error('Enter a name with 1–18 characters.');
       const roomCode = normalizeRoomCode(String(data.get('roomCode') ?? ''));
       connectGuest(roomCode);
-    } else if (form.id === 'action-form') {
-      const select = form.querySelector<HTMLSelectElement>('[name="action"]');
-      if (!select) throw new Error('Choose a move first.');
-      const [kind, towerId] = select.value.split('|');
-      const action: PlayerAction = kind === 'new'
-        ? { kind: 'new' }
-        : kind === 'build'
-          ? { kind: 'build', towerId: towerId ?? '' }
-          : { kind: 'bank', towerId: towerId ?? '' };
-      commitAction(screen === 'host' ? hostId : guestId, action);
     }
   } catch (error) {
     showFailure(error instanceof Error ? error.message : 'The form could not be submitted.');
