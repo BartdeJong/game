@@ -13,17 +13,12 @@ import {
   type PlayerAction,
 } from './game';
 import { parseMessage, type PeerMessage } from './protocol';
-import {
-  createPeerConnection,
-  decodeSignal,
-  encodeSignal,
-  waitForIceGathering,
-} from './signaling';
+import { Peer, PeerError, PeerErrorType, type DataConnection } from 'peerjs';
+import { createRoomCode, formatRoomCode, normalizeRoomCode } from './room-code';
 import './style.css';
 
 interface HostConnection {
-  peer: RTCPeerConnection;
-  channel: RTCDataChannel;
+  channel: DataConnection;
   playerId: string | null;
 }
 
@@ -43,13 +38,22 @@ let submitted = new Map<string, PlayerAction>();
 let submittedCount = 0;
 let guestSubmitted = false;
 let hostConnections = new Set<HostConnection>();
-let pairing: { connection: HostConnection; offer: string; accepted: boolean } | null = null;
-let creatingOffer = false;
+let hostPeer: Peer | null = null;
+let hostRoomCode = '';
+let creatingRoomCode = false;
 let roomGeneration = 0;
-let guestPeer: RTCPeerConnection | null = null;
-let guestChannel: RTCDataChannel | null = null;
+let guestPeer: Peer | null = null;
+let guestChannel: DataConnection | null = null;
 let notice = '';
 let failure = '';
+
+const PEER_OPTIONS = {
+  host: '0.peerjs.com',
+  port: 443,
+  secure: true,
+  debug: 0,
+  config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] },
+};
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => {
@@ -80,6 +84,47 @@ function randomId(): string {
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
   const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function waitForPeerOpen(peer: Peer): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      finish(() => reject(new Error('The room service did not respond. Check your internet connection and try again.')));
+    }, 15_000);
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      peer.off('open', onOpen);
+      peer.off('error', onError);
+      peer.off('close', onClose);
+      callback();
+    };
+    const onOpen = () => finish(resolve);
+    const onError = (error: PeerError<`${PeerErrorType}`>) => finish(() => reject(error));
+    const onClose = () => finish(() => reject(new Error('The room service connection closed.')));
+    peer.on('open', onOpen);
+    peer.on('error', onError);
+    peer.on('close', onClose);
+  });
+}
+
+function peerFailureMessage(error: unknown, role: 'host' | 'guest'): string {
+  const type = error instanceof Error && 'type' in error && typeof error.type === 'string' ? error.type : '';
+  if (type === 'peer-unavailable') {
+    return 'No open room uses that code. Check with the host and try again.';
+  }
+  if (type === 'network' || type === 'server-error' || type === 'socket-error' || type === 'socket-closed') {
+    return 'Could not reach the room service. Check your internet connection and try again.';
+  }
+  if (type === 'browser-incompatible') {
+    return 'This browser does not support the connection needed to join the game.';
+  }
+  const detail = error instanceof Error ? ` ${error.message}` : '';
+  return role === 'host'
+    ? `Could not create a room.${detail}`
+    : `Could not join the room.${detail}`;
 }
 
 function rollDice(): [number, number] {
@@ -143,8 +188,6 @@ function render(): void {
   app.innerHTML = `${headerMarkup()}${noticeMarkup()}${body}${footerMarkup()}`;
 }
 
-let guestAnswer = '';
-
 function renderHome(): string {
   return `<section class="hero">
     <div class="hero-copy">
@@ -175,7 +218,7 @@ function renderHome(): string {
   </section>
   <section class="connect-note">
     <span class="connect-icon" aria-hidden="true">⌁</span>
-    <div><strong>Playing on phones?</strong><p>Open this page on every device. Pair guests by copying connection codes between devices on the same Wi‑Fi. Keep the host tab open and in the foreground.</p></div>
+    <div><strong>Playing on phones?</strong><p>Open this page on every device. The host shares one short room code; guests enter it to join. Keep the host tab open and in the foreground.</p></div>
   </section>
   <div id="host-form-slot"></div>
 `;
@@ -185,15 +228,15 @@ function renderGuestSetup(): string {
   return `<section class="narrow-panel">
     <button class="back-link" data-action="home" type="button">← Back</button>
     <p class="eyebrow">JOIN THE SKYLINE</p>
-    <h1>Enter the host's<br /><em>connection code.</em></h1>
-    <p class="lead-small">Ask the host to copy their offer code and send it to you. Paste it below; you’ll get an answer code to send back. Share codes only with players in your room.</p>
+    <h1>Enter the host's<br /><em>room code.</em></h1>
     <form id="guest-form" class="form-card">
       <label for="guest-name">Your name</label>
       <input id="guest-name" name="name" maxlength="18" autocomplete="nickname" required value="${escapeHtml(guestName)}" placeholder="e.g. Robin" />
-      <label for="guest-offer-code">Host offer code</label>
-      <textarea id="guest-offer-code" class="signal-code" name="offerCode" rows="5" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste the host’s code here"></textarea>
-      <button class="button button-primary button-full" type="submit">Create answer code</button>
+      <label for="guest-room-code">Room code</label>
+      <input id="guest-room-code" class="room-code-input" name="roomCode" maxlength="11" required autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="e.g. 7K2M-Q9RX" />
+      <button class="button button-primary button-full" type="submit">Join room</button>
     </form>
+    <p class="quiet-note">The host must keep their room open. Codes are case-insensitive.</p>
   </section>`;
 }
 
@@ -203,42 +246,31 @@ function renderHost(): string {
   if (state.status !== 'lobby') return renderGame(state, true);
   return `<section class="game-panel">
     <div class="section-heading"><div><p class="eyebrow">HOST LOBBY</p><h1>Your skyline <em>starts here.</em></h1></div><span class="pill">${connectedPlayers(state).length}/${MAX_PLAYERS} players</span></div>
-    <p class="lead-small">You are the host and a player. Copy an offer code to each guest, then paste their answer code here. Keep everyone on the same Wi‑Fi.</p>
+    <p class="lead-small">You are the host and a player. Share this short room code; guests enter it on their devices.</p>
+    <div class="pair-card room-code-card">
+      <p class="eyebrow">ROOM CODE</p>
+      ${hostRoomCode
+        ? `<input id="host-room-code" class="room-code-input" readonly value="${formatRoomCode(hostRoomCode)}" aria-label="Room code" />
+          <button class="button button-secondary button-full copy-code-button" data-action="copy-room-code" type="button">Copy room code</button>`
+        : `<p class="quiet-note">${creatingRoomCode ? 'Getting a room code…' : 'Could not connect to the room service.'}</p>
+          ${creatingRoomCode ? '' : '<button class="button button-secondary" data-action="retry-room-code" type="button">Try again</button>'}`}
+      <p class="quiet-note">Share it only with players in your game. The host page must stay open.</p>
+    </div>
     <div class="player-list">${state.players.map((player) => playerMarkup(player, true)).join('')}</div>
     <div class="pair-area">
-      ${creatingOffer ? `<p class="quiet-note">Preparing a private connection code…</p>` : pairing && !pairing.accepted ? `<div class="pair-card">
-        <p class="eyebrow">STEP 1 · SEND THIS TO THE GUEST</p><h2>Host offer code</h2>
-        <textarea id="host-offer-code" class="signal-code" readonly rows="5" aria-label="Host offer code">${escapeHtml(pairing.offer)}</textarea>
-        <button class="button button-secondary button-full copy-code-button" data-action="copy-offer" type="button">Copy offer code</button>
-        <p class="quiet-note">The guest pastes this into Join a game, then sends their answer code back to you.</p>
-        <form id="host-answer-form" class="form-card signal-form">
-          <label for="host-answer-code">Guest answer code</label>
-          <textarea id="host-answer-code" class="signal-code" name="answerCode" rows="5" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste the guest’s answer code here"></textarea>
-          <button class="button button-primary button-full" type="submit">Connect guest</button>
-        </form>
-        <button class="text-button" data-action="cancel-pair" type="button">Cancel pairing</button>
-      </div>` : pairing?.accepted ? `<div class="pair-card">
-        <p class="eyebrow">STEP 2 · CONNECTING</p><h2>Waiting for guest</h2>
-        <p class="quiet-note">Their browser is opening the direct connection. Keep both pages open.</p>
-        <button class="text-button" data-action="cancel-pair" type="button">Cancel pairing</button>
-      </div>` : `<button class="button button-secondary" data-action="add-guest" type="button" ${connectedPlayers(state).length >= MAX_PLAYERS || creatingOffer ? 'disabled' : ''}>＋ Add a guest</button>`}
-      ${connectedPlayers(state).length >= MIN_PLAYERS ? `<button class="button button-primary button-full start-button" data-action="start-game" type="button" ${pairing || creatingOffer ? 'disabled' : ''}>Start game <span aria-hidden="true">→</span></button>` : `<p class="quiet-note">Waiting for at least one guest. The host counts as a player.</p>`}
+      ${connectedPlayers(state).length >= MIN_PLAYERS
+        ? `<button class="button button-primary button-full start-button" data-action="start-game" type="button" ${creatingRoomCode || !hostRoomCode ? 'disabled' : ''}>Start game <span aria-hidden="true">→</span></button>`
+        : `<p class="quiet-note">Waiting for at least one guest. The host counts as a player.</p>`}
     </div>
-    <details class="help-details"><summary>Connection notes</summary><p>GitHub Pages needs internet to load the game. Pairing uses direct browser-to-browser WebRTC and does not use a relay. Copy/paste the offer and answer codes privately; they contain connection details. iPhone may suspend a background tab, so keep the host page open in front.</p></details>
+    <details class="help-details"><summary>Connection notes</summary><p>Joining uses the PeerJS Cloud signaling service to find the room; gameplay uses a direct encrypted browser connection when the network allows it. Internet access is required for signaling. The room code is an invite—share it privately. iPhone may suspend a background tab, so keep the host page open in front.</p></details>
   </section>`;
 }
 
 function renderGuest(): string {
   if (!guestState) {
     return `<section class="narrow-panel">
-      <p class="eyebrow">GUEST CONNECTION</p><h1>Waiting for the<br /><em>host.</em></h1>
-      ${guestAnswer ? `<div class="pair-card">
-        <p class="eyebrow">SEND THIS BACK TO THE HOST</p><h2>Your answer code</h2>
-        <textarea id="guest-answer-code" class="signal-code" readonly rows="5" aria-label="Guest answer code">${escapeHtml(guestAnswer)}</textarea>
-        <button class="button button-secondary button-full copy-code-button" data-action="copy-answer" type="button">Copy answer code</button>
-        <p class="quiet-note">Keep this page open while the host pastes the code and connects.</p>
-      </div>` : ''}
-      <p class="lead-small">When the direct connection is ready, the shared lobby will appear here.</p>
+      <p class="eyebrow">GUEST CONNECTION</p><h1>Joining the<br /><em>skyline.</em></h1>
+      <p class="lead-small">Connecting to the host. Keep this page open; the lobby will appear when the connection is ready.</p>
       <button class="button button-secondary" data-action="cancel-guest" type="button">Leave</button>
     </section>`;
   }
@@ -336,7 +368,7 @@ function rulesMarkup(): string {
 }
 
 async function copyCode(selector: string, successMessage: string): Promise<void> {
-  const field = app?.querySelector<HTMLTextAreaElement>(selector);
+  const field = app?.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector);
   if (!field) throw new Error('The connection code is not available to copy.');
   try {
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -353,7 +385,7 @@ async function copyCode(selector: string, successMessage: string): Promise<void>
         ? `Could not copy automatically: ${error.message}. The code is selected so you can copy it manually.`
         : 'Could not copy automatically. The code is selected so you can copy it manually.',
     );
-    const refreshedField = app?.querySelector<HTMLTextAreaElement>(selector);
+    const refreshedField = app?.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector);
     refreshedField?.focus();
     refreshedField?.select();
   }
@@ -386,7 +418,6 @@ function messageForConnection(connection: HostConnection, message: PeerMessage):
       towers: [],
       connected: true,
     });
-    if (pairing?.connection === connection) pairing = null;
     notice = `${message.name.trim()} joined the room.`;
     failure = '';
     broadcastState();
@@ -416,21 +447,25 @@ function messageForConnection(connection: HostConnection, message: PeerMessage):
 }
 
 function attachHostConnection(connection: HostConnection): void {
-  connection.channel.onmessage = (event: MessageEvent<string>) => {
+  connection.channel.on('data', (data: unknown) => {
     try {
-      messageForConnection(connection, parseMessage(event.data));
+      if (typeof data !== 'string') throw new Error('Received an invalid game message.');
+      messageForConnection(connection, parseMessage(data));
     } catch (error) {
-      connection.channel.send(JSON.stringify({
-        type: 'error',
-        message: error instanceof Error ? error.message : 'Invalid game message.',
-      }));
+      if (connection.channel.open) {
+        connection.channel.send(JSON.stringify({
+          type: 'error',
+          message: error instanceof Error ? error.message : 'Invalid game message.',
+        }));
+      }
     }
-  };
-  connection.channel.onopen = () => {
+  });
+  connection.channel.on('open', () => {
     notice = 'Connection ready. The guest can join the lobby now.';
     render();
-  };
-  connection.channel.onclose = () => {
+  });
+  connection.channel.on('close', () => {
+    hostConnections.delete(connection);
     const playerId = connection.playerId;
     if (!playerId || !hostState) return;
     const player = hostState.players.find((item) => item.id === playerId);
@@ -438,19 +473,17 @@ function attachHostConnection(connection: HostConnection): void {
     notice = `${player?.name ?? 'A guest'} disconnected. Remove them to continue.`;
     broadcastState();
     render();
-  };
-  connection.peer.onconnectionstatechange = () => {
-    if (connection.peer.connectionState === 'failed' || connection.peer.connectionState === 'closed') {
-      connection.channel.close();
-    }
-  };
+  });
+  connection.channel.on('error', (error) => {
+    showFailure(peerFailureMessage(error, 'host'));
+  });
 }
 
 function broadcastState(): void {
   if (!hostState) return;
   submittedCount = submitted.size;
   for (const connection of hostConnections) {
-    if (connection.playerId && connection.channel.readyState === 'open') {
+    if (connection.playerId && connection.channel.open) {
       connection.channel.send(JSON.stringify({
         type: 'state',
         state: hostState,
@@ -503,70 +536,112 @@ function broadcastGuestStatus(): void {
   render();
 }
 
-async function createHostOffer(): Promise<void> {
-  if (!hostState || hostState.players.length >= MAX_PLAYERS || pairing || creatingOffer) return;
-  creatingOffer = true;
+async function createHostPeer(): Promise<void> {
+  if (!hostState || creatingRoomCode) return;
+  creatingRoomCode = true;
+  hostPeer?.destroy();
+  hostPeer = null;
+  hostRoomCode = '';
   const generation = roomGeneration;
   render();
-  const peer = createPeerConnection();
-  const channel = peer.createDataChannel('skyline-game');
-  const connection: HostConnection = { peer, channel, playerId: null };
-  hostConnections.add(connection);
-  attachHostConnection(connection);
   try {
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    await waitForIceGathering(peer);
-    const sdp = peer.localDescription?.sdp;
-    if (!sdp) throw new Error('The browser did not create a connection offer.');
-    if (generation !== roomGeneration) {
-      hostConnections.delete(connection);
-      peer.close();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const code = createRoomCode();
+      const peer = new Peer(code, PEER_OPTIONS);
+      hostPeer = peer;
+      try {
+        await waitForPeerOpen(peer);
+      } catch (error) {
+        peer.destroy();
+        if (hostPeer === peer) hostPeer = null;
+        if (generation !== roomGeneration) return;
+        if (error instanceof PeerError && error.type === PeerErrorType.UnavailableID) continue;
+        throw error;
+      }
+      if (generation !== roomGeneration) {
+        peer.destroy();
+        if (hostPeer === peer) hostPeer = null;
+        return;
+      }
+      hostRoomCode = code;
+      peer.on('connection', (channel) => {
+        if (
+          hostPeer !== peer ||
+          !hostState ||
+          hostState.status !== 'lobby' ||
+          connectedPlayers(hostState).length >= MAX_PLAYERS
+        ) {
+          channel.close();
+          return;
+        }
+        const connection: HostConnection = { channel, playerId: null };
+        hostConnections.add(connection);
+        attachHostConnection(connection);
+      });
+      peer.on('error', (error) => {
+        if (hostPeer === peer) showFailure(peerFailureMessage(error, 'host'));
+      });
+      peer.on('disconnected', () => {
+        if (hostPeer === peer) {
+          showFailure('The room service connection was lost. Existing players may stay connected, but new guests cannot join.');
+        }
+      });
+      notice = 'Room ready. Share the code with your guests.';
+      failure = '';
       return;
     }
-    pairing = { connection, offer: encodeSignal({ type: 'offer', sdp }), accepted: false };
-    notice = '';
-    failure = '';
+    throw new Error('Could not reserve a unique room code. Try again.');
   } catch (error) {
-    hostConnections.delete(connection);
-    peer.close();
     if (generation === roomGeneration) {
-      failure = error instanceof Error ? error.message : 'Could not prepare a guest connection.';
-      notice = '';
+      hostPeer?.destroy();
+      hostPeer = null;
+      hostRoomCode = '';
+      showFailure(peerFailureMessage(error, 'host'));
     }
   } finally {
     if (generation === roomGeneration) {
-      creatingOffer = false;
+      creatingRoomCode = false;
       render();
     }
   }
 }
 
-async function acceptHostAnswer(value: string): Promise<void> {
-  if (!pairing) throw new Error('There is no guest pairing waiting for an answer.');
-  const signal = decodeSignal(value);
-  if (signal.type !== 'answer') throw new Error('Paste the guest answer code, not another host offer.');
-  await pairing.connection.peer.setRemoteDescription({ type: signal.type, sdp: signal.sdp });
-  pairing.accepted = true;
-  notice = 'Answer received. Waiting for the guest connection.';
-  render();
-}
-
-async function acceptGuestOffer(value: string): Promise<void> {
-  const signal = decodeSignal(value);
-  if (signal.type !== 'offer') throw new Error('Paste the host offer code, not another guest answer.');
-  const peer = createPeerConnection();
+function connectGuest(roomCode: string): void {
+  const peer = new Peer(PEER_OPTIONS);
   guestPeer = peer;
-  peer.ondatachannel = (event) => {
-    guestChannel = event.channel;
-    guestChannel.onopen = () => {
-      guestChannel?.send(JSON.stringify({ type: 'join', playerId: guestId, name: guestName }));
+  guestState = null;
+  guestSubmitted = false;
+  guestId = randomId();
+  screen = 'guest';
+  notice = 'Connecting to the room…';
+  failure = '';
+  render();
+  void waitForPeerOpen(peer).then(() => {
+    if (guestPeer !== peer) return;
+    peer.on('error', (error) => {
+      if (guestPeer === peer) showFailure(peerFailureMessage(error, 'guest'));
+    });
+    peer.on('disconnected', () => {
+      if (guestPeer === peer) showFailure('The room service connection was lost. Leave and try joining again.');
+    });
+    const channel = peer.connect(roomCode, { serialization: 'binary' });
+    guestChannel = channel;
+    const timeout = window.setTimeout(() => {
+      if (guestPeer === peer && !channel.open) {
+        channel.close();
+        showFailure('The host did not accept the connection. Check the room code and make sure the host page is open.');
+      }
+    }, 20_000);
+    channel.on('open', () => {
+      window.clearTimeout(timeout);
+      channel.send(JSON.stringify({ type: 'join', playerId: guestId, name: guestName }));
       notice = 'Connected to the host. Joining the lobby…';
       render();
-    };
-    guestChannel.onmessage = (messageEvent: MessageEvent<string>) => {
+    });
+    channel.on('data', (data: unknown) => {
       try {
-        const message = parseMessage(messageEvent.data);
+        if (typeof data !== 'string') throw new Error('Received an invalid game message.');
+        const message = parseMessage(data);
         if (message.type === 'state' && message.playerId === guestId) {
           const previousRound = guestState?.round;
           guestState = message.state;
@@ -582,26 +657,25 @@ async function acceptGuestOffer(value: string): Promise<void> {
       } catch (error) {
         showFailure(error instanceof Error ? error.message : 'Could not read the host update.');
       }
-    };
-    guestChannel.onclose = () => {
-      showFailure('The host connection closed. The match cannot be recovered if the host page was closed.');
-    };
-  };
-  peer.onconnectionstatechange = () => {
-    if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
-      showFailure('The direct connection was interrupted. Ask the host to pair you again.');
-    }
-  };
-  await peer.setRemoteDescription({ type: signal.type, sdp: signal.sdp });
-  const answer = await peer.createAnswer();
-  await peer.setLocalDescription(answer);
-  await waitForIceGathering(peer);
-  const sdp = peer.localDescription?.sdp;
-  if (!sdp) throw new Error('The browser did not create a connection answer.');
-  guestAnswer = encodeSignal({ type: 'answer', sdp });
-  screen = 'guest';
-  notice = 'Copy your answer code and send it to the host. Keep this page open.';
-  render();
+    });
+    channel.on('close', () => {
+      window.clearTimeout(timeout);
+      if (guestPeer !== peer) return;
+      showFailure(guestState
+        ? 'The host connection closed. The match cannot be recovered if the host page was closed.'
+        : 'The connection closed before joining. Check the room code and try again.');
+    });
+    channel.on('error', (error) => {
+      window.clearTimeout(timeout);
+      if (guestPeer === peer) showFailure(peerFailureMessage(error, 'guest'));
+    });
+  }).catch((error: unknown) => {
+    if (guestPeer !== peer) return;
+    peer.destroy();
+    guestPeer = null;
+    guestChannel = null;
+    showFailure(peerFailureMessage(error, 'guest'));
+  });
 }
 
 function removePlayer(playerId: string): void {
@@ -613,7 +687,7 @@ function removePlayer(playerId: string): void {
   for (const connection of hostConnections) {
     if (connection.playerId === playerId) {
       hostConnections.delete(connection);
-      connection.peer.close();
+      connection.channel.close();
     }
   }
   notice = `${player.name} was removed from the room.`;
@@ -624,18 +698,21 @@ function removePlayer(playerId: string): void {
 
 function resetRoom(): void {
   roomGeneration += 1;
-  creatingOffer = false;
-  for (const connection of hostConnections) connection.peer.close();
-  hostConnections.clear();
-  guestPeer?.close();
+  creatingRoomCode = false;
   hostState = null;
   guestState = null;
-  pairing = null;
+  for (const connection of hostConnections) connection.channel.close();
+  hostConnections.clear();
+  hostPeer?.destroy();
+  hostPeer = null;
+  hostRoomCode = '';
+  guestPeer?.destroy();
+  guestPeer = null;
+  guestChannel = null;
   submitted.clear();
   screen = 'home';
   notice = '';
   failure = '';
-  guestAnswer = '';
   render();
 }
 
@@ -663,22 +740,11 @@ app.addEventListener('click', async (event) => {
       }
     } else if (action === 'show-guest') {
       screen = 'guest-setup';
-      guestAnswer = '';
       render();
-    } else if (action === 'add-guest') {
-      await createHostOffer();
-    } else if (action === 'copy-offer') {
-      await copyCode('#host-offer-code', 'Host offer code copied.');
-    } else if (action === 'copy-answer') {
-      await copyCode('#guest-answer-code', 'Guest answer code copied.');
-    } else if (action === 'cancel-pair') {
-      if (pairing) {
-        hostConnections.delete(pairing.connection);
-        pairing.connection.peer.close();
-        pairing = null;
-      }
-      notice = 'Guest pairing cancelled.';
-      render();
+    } else if (action === 'copy-room-code') {
+      await copyCode('#host-room-code', 'Room code copied.');
+    } else if (action === 'retry-room-code') {
+      await createHostPeer();
     } else if (action === 'start-game' && hostState) {
       if (connectedPlayers(hostState).length < MIN_PLAYERS) {
         showFailure('At least two connected players are needed.');
@@ -704,12 +770,11 @@ app.addEventListener('click', async (event) => {
     } else if (action === 'new-game') {
       resetRoom();
     } else if (action === 'cancel-guest') {
-      guestPeer?.close();
+      guestPeer?.destroy();
       guestPeer = null;
       guestChannel = null;
       guestState = null;
       guestSubmitted = false;
-      guestAnswer = '';
       screen = 'home';
       notice = '';
       render();
@@ -743,17 +808,13 @@ app.addEventListener('submit', async (event) => {
       notice = '';
       failure = '';
       render();
-    } else if (form.id === 'host-answer-form') {
-      const data = new FormData(form);
-      await acceptHostAnswer(String(data.get('answerCode') ?? '').trim());
+      await createHostPeer();
     } else if (form.id === 'guest-form') {
       const data = new FormData(form);
       guestName = String(data.get('name') ?? '').trim();
       if (!guestName || guestName.length > 18) throw new Error('Enter a name with 1–18 characters.');
-      const offerCode = String(data.get('offerCode') ?? '').trim();
-      if (!offerCode) throw new Error('Paste the host offer code.');
-      guestId = randomId();
-      await acceptGuestOffer(offerCode);
+      const roomCode = normalizeRoomCode(String(data.get('roomCode') ?? ''));
+      connectGuest(roomCode);
     } else if (form.id === 'action-form') {
       const select = form.querySelector<HTMLSelectElement>('[name="action"]');
       if (!select) throw new Error('Choose a move first.');

@@ -232,15 +232,15 @@ textarea { resize: vertical; }
 }
 .pair-card { text-align: center; }
 .pair-card h2, .resolution-card h2 { margin-bottom: 8px; font-family: var(--serif); font-size: 1.7rem; }
-.signal-code {
-  min-height: 112px;
-  font: .68rem/1.45 var(--mono);
-  overflow-wrap: anywhere;
-  user-select: text;
-  -webkit-user-select: text;
+.room-code-card { max-width: 400px; margin-left: 0; }
+.room-code-input {
+  min-height: 62px;
+  color: var(--lime);
+  font: 700 clamp(1.35rem, 5vw, 2rem) var(--mono);
+  letter-spacing: .12em;
+  text-align: center;
+  text-transform: uppercase;
 }
-.signal-code[readonly] { color: #d4e0d5; }
-.signal-form { margin: 20px 0 0; text-align: left; }
 .copy-code-button { margin-top: 14px; }
 .pair-area { margin-top: 22px; }
 .pair-area > .button { margin-top: 15px; }

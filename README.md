@@ -1,18 +1,17 @@
 # Skyline Dice
 
-A small, mobile-first dice game for 2–5 players. The static TypeScript app is hosted on GitHub Pages. One player's browser is the host and the other devices connect directly to it with WebRTC; nothing is installed on players' phones.
+A small, mobile-first dice game for 2–5 players. The static TypeScript app is hosted on GitHub Pages. One player's browser is the host and the other devices connect to it with WebRTC; nothing is installed on players' phones.
 
 ## Play
 
 1. Open the GitHub Pages URL on every device. The first page load needs internet.
-2. The host taps **Host a game**, enters a name, and taps **Add a guest**.
-3. Each guest opens **Join a game**, enters a name, and pastes the host's offer code.
-4. The guest copies their answer code back to the host, who pastes it to connect them. Repeat the exchange for each guest.
-5. Once 2–5 players are connected, the host starts the game. Keep the host page open and in the foreground.
+2. The host taps **Host a game**, enters a name, and shares the short room code.
+3. Each guest opens **Join a game**, enters a name and the room code. They join the same lobby automatically.
+4. Once 2–5 players are connected, the host starts the game. Keep the host page open and in the foreground.
 
-Pairing exchanges compressed WebRTC connection descriptions as copy/paste codes. Use the **Copy** button where available, or select the code and copy it manually. Share codes privately with the intended player; they contain connection details. No room service, cloud signaling, STUN/TURN server, or relay is used. Both devices need the same Wi-Fi network. Network client isolation or browser restrictions may prevent a direct connection. Codes can be long, so use a message or other text-sharing method that preserves the full code.
+Room codes are eight characters, displayed in two groups for readability. PeerJS Cloud is used only to introduce the browsers and exchange WebRTC setup messages; the game is configured for direct WebRTC connections with STUN and no TURN relay. The room code is an invite, so share it only with players in your game. Internet access is required for room setup. Using the same Wi‑Fi is recommended, but network isolation or firewall restrictions can still prevent a direct connection. The free shared signaling service may be unavailable or rate-limited; it is not an availability guarantee.
 
-The host browser generates the shared dice, validates actions, and owns the live match state. If the host closes or loses the page, the room cannot be recovered. A disconnected guest must be removed by the host; guests cannot rejoin a match already in progress, so restart the room if they need to return. iOS may suspend a background tab, so keep the host in the foreground. The app has not yet been verified on physical iPhones; local WebRTC and copy/paste pairing on iPhone Safari remain go/no-go tests.
+The host browser generates the shared dice, validates actions, and owns the live match state. The signaling service does not store game state. If the host closes or loses the page, the room cannot be recovered. A disconnected guest must be removed by the host; guests cannot rejoin a match already in progress, so restart the room if they need to return. iOS may suspend a background tab, so keep the host in the foreground. The app has not yet been verified on physical iPhones; short-code pairing and direct WebRTC on iPhone Safari remain go/no-go tests.
 
 ## Rules
 
@@ -36,18 +35,18 @@ npm run build
 npm run dev
 ```
 
-The dev server is for development only and does not create a LAN room server. To test multi-device pairing, publish the build to GitHub Pages or serve the built files through a static server. Physical iPhone tests are required for local ICE connectivity, copying/pasting long codes, multiple guests, and background/resume behavior.
+The dev server is for development only and does not create a LAN room server. To test multi-device pairing, publish the build to GitHub Pages or serve the built files through a static server. Physical iPhone tests are required for short-code joining, direct ICE connectivity, multiple guests, and background/resume behavior.
 
 ### Physical iPhone smoke test
 
 - Open the published HTTPS page in Safari on the host and at least one guest iPhone.
-- Copy the host offer code to the guest, then copy the guest answer code back to the host.
+- Enter the host's short room code on one or more guest iPhones and confirm they join automatically.
 - Repeat pairing for up to four guests, then confirm everyone sees the same roll and resolved score.
 - Confirm choices remain hidden until all connected players commit.
 - Background and resume Safari, interrupt Wi‑Fi, and close a guest tab; verify status messages and host removal behavior.
-- Check copy/paste behavior for full-length codes, including any line breaks added by the sharing method.
+- Confirm room codes work with lowercase input and optional hyphens/spaces.
 
-Direct same-Wi‑Fi WebRTC without a signaling or relay service is the principal feasibility risk. If these checks fail on the intended iPhone/browser/network combination, the no-relay architecture needs to change before this can be treated as a playable iPhone MVP.
+Direct WebRTC without a TURN relay is the principal feasibility risk. PeerJS Cloud is a shared public signaling service, and its availability is outside this project's control. If these checks fail on the intended iPhone/browser/network combination, the connection architecture needs to change before this can be treated as a playable iPhone MVP.
 
 ## GitHub Pages
 

@@ -7,7 +7,11 @@ import {
   resolveRound,
   towerPoints,
 } from '../.test-build/src/game.js';
-import { decodeSignal, encodeSignal } from '../.test-build/src/signaling.js';
+import {
+  createRoomCode,
+  formatRoomCode,
+  normalizeRoomCode,
+} from '../.test-build/src/room-code.js';
 
 function player(id, overrides = {}) {
   return {
@@ -113,17 +117,15 @@ test('rejects incomplete or illegal action sets without changing the original st
   assert.deepEqual(state.players[0].towers, []);
 });
 
-test('round-trips compressed offer and answer codes, including pasted line breaks', () => {
-  for (const type of ['offer', 'answer']) {
-    const signal = { type, sdp: `v=0\r\no=- ${type} session\r\ns=-\r\n` };
-    const code = encodeSignal(signal);
-    assert.ok(code.startsWith('SKY1:'));
-    assert.deepEqual(decodeSignal(code), signal);
-    assert.deepEqual(decodeSignal(`${code.slice(0, 12)}\n${code.slice(12)}`), signal);
-  }
+test('creates short room codes with an easy-to-read display format', () => {
+  const code = createRoomCode();
+  assert.match(code, /^[A-HJ-NP-Z2-9]{8}$/);
+  assert.equal(formatRoomCode(code), `${code.slice(0, 4)}-${code.slice(4)}`);
 });
 
-test('rejects connection codes that are not Skyline codes or have an invalid payload', () => {
-  assert.throws(() => decodeSignal('not-a-code'), /not a Skyline connection code/);
-  assert.throws(() => decodeSignal('SKY1:invalid'), /invalid|incomplete/i);
+test('normalizes room-code case and separators, and rejects invalid codes', () => {
+  assert.equal(normalizeRoomCode('7k2m-q9rx'), '7K2MQ9RX');
+  assert.equal(normalizeRoomCode('7K2M Q9RX'), '7K2MQ9RX');
+  assert.throws(() => normalizeRoomCode('7K2M-Q9R'), /8-character room code/);
+  assert.throws(() => normalizeRoomCode('7K2M-Q9R0'), /8-character room code/);
 });
