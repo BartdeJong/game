@@ -67,6 +67,20 @@ function requireScreenReaderRegion(selector: string): HTMLElement {
   return region;
 }
 
+function registerServiceWorker(): void {
+  if (!('serviceWorker' in navigator)) return;
+  const manifestLink = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+  if (!manifestLink?.href) {
+    console.error('The PWA manifest link is missing; offline app support is unavailable.');
+    return;
+  }
+  const serviceWorkerUrl = new URL('sw.js', manifestLink.href);
+  const scope = new URL('./', manifestLink.href).pathname;
+  void navigator.serviceWorker.register(serviceWorkerUrl, { scope }).catch((error: unknown) => {
+    console.error('Service worker registration failed; offline app support is unavailable.', error);
+  });
+}
+
 const HOST_RECOVERY_KEY = 'skyline-dice.host-recovery.v1';
 const GUEST_RECOVERY_KEY = 'skyline-dice.guest-recovery.v1';
 const LANGUAGE_PREFERENCE_KEY = 'skyline-dice.language.v1';
@@ -437,7 +451,12 @@ function dismissNotification(): void {
 function headerMarkup(): string {
   return `<header class="masthead">
     <a class="brand" href="#" data-action="home" aria-label="Skyline Dice home">
-      <span class="brand-mark" aria-hidden="true">▥</span>
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+        <circle cx="23.5" cy="7" r="4.5" />
+        <path class="brand-wind" d="M17 8.5h12M19 11h9" />
+        <path class="brand-tower" d="M3.5 28V20h4v8m1.5 0V15h4v13m1.5 0V19h4v9m1.5 0V12h4v16m1.5 0V18h4v10M2 28.5h28" />
+        <path class="brand-windows" d="M4.5 22h2m-2 3h2m4.5-8h2m-2 3h2m-2 3h2m-2 3h2m3.5-6h2m-2 3h2m-2 3h2m3.5-14h2m-2 3h2m-2 3h2m-2 3h2m-2 3h2m3.5-8h2m-2 3h2m-2 3h2" />
+      </svg>
       <span>SKYLINE <span class="brand-light">DICE</span></span>
     </a>
     <div class="masthead-tools">
@@ -1936,3 +1955,4 @@ try {
 }
 window.addEventListener('pagehide', persistRecovery);
 render();
+registerServiceWorker();

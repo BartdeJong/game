@@ -1,6 +1,6 @@
 # Skyline Dice
 
-A small, mobile-first dice game for 2–10 players. The static TypeScript app is hosted on GitHub Pages. One player's browser is the host and the other devices connect to it with WebRTC; nothing is installed on players' phones.
+A small, mobile-first dice game for 2–10 players. The static TypeScript app is hosted on GitHub Pages and can be installed as a Progressive Web App (PWA). One player's browser is the host and the other devices connect to it with WebRTC.
 
 ## Play
 
@@ -12,7 +12,11 @@ A small, mobile-first dice game for 2–10 players. The static TypeScript app is
 
 Room codes are eight characters, displayed in two groups for readability. PeerJS Cloud is used only to introduce the browsers and exchange WebRTC setup messages; the game is configured for direct WebRTC connections with STUN and no TURN relay. The room code is an invite, so share it only with players in your game. Internet access is required for room setup. Using the same Wi‑Fi is recommended, but network isolation or firewall restrictions can still prevent a direct connection. The free shared signaling service may be unavailable or rate-limited; it is not an availability guarantee.
 
-The host browser generates the shared dice, validates actions, and owns the live match state. The signaling service does not store game state. The app saves a recovery copy of the host match and guest resume credentials in each device's browser storage. If a page is closed or reloaded, return to the game page and choose **Resume host room** or **Rejoin** on the home screen. The host must resume first so guests can reconnect; they return as their original players, including during an active match. A suspended host cannot take turns or run timers while its page is closed. Recovery depends on the same browser/device retaining its site data and on the room code becoming available again; clearing site data or using private browsing can prevent recovery. Intentionally leaving a room clears that device's saved recovery record. iOS may suspend a background tab, so keep the host in the foreground. The app has not yet been verified on physical iPhones; short-code pairing and direct WebRTC on iPhone Safari remain go/no-go tests.
+The host browser generates the shared dice, validates actions, and owns the live match state. The signaling service does not store game state. The app saves a recovery copy of the host match and guest resume credentials in each device's browser storage. If a page is closed or reloaded, reopen the game in the same browser or installed app and choose **Resume host room** or **Rejoin** on the home screen. The host must resume first so guests can reconnect; they return as their original players, including during an active match. Recovery depends on that browser or installed app retaining its site data and on the room code becoming available again; clearing site data or using private browsing can prevent recovery. Intentionally leaving a room clears that device's saved recovery record. iOS may suspend a background app, so keep the host in the foreground.
+
+## Install and offline use
+
+Install Skyline Dice from the browser menu (for example, **Install app** in Chrome or **Add to Home Screen** in Safari). The installed app opens without the browser's address bar. Its app shell and previously loaded game files are cached, so the interface can open offline after the first successful online visit. Creating or joining a room, reconnecting players, and playing multiplayer still require internet access. Browser storage for the installed app may be separate from the regular browser tab; reopen a saved game in the same app or browser where it was started.
 
 ## Rules
 
@@ -29,7 +33,7 @@ Each standing tower has a vertical 2–12 wind scale beside it: green totals are
 
 ## Run and test locally
 
-Requires Node.js 20 or newer for development and builds. Players only need a mobile browser.
+Requires Node.js 20 or newer for development and builds. Players need a modern mobile browser; installing the PWA is optional.
 
 ```sh
 npm ci
@@ -38,7 +42,7 @@ npm run build
 npm run dev
 ```
 
-The dev server is for development only and does not create a LAN room server. To test multi-device pairing, publish the build to GitHub Pages or serve the built files through a static server. Physical iPhone tests are required for short-code joining, direct ICE connectivity, multiple guests, and background/resume behavior.
+The dev server is for development only and does not create a LAN room server. To test PWA installation and offline launch, build and serve the app over HTTPS (localhost is also treated as secure), install it from the browser, open it once online, then enable airplane mode and reopen it. The game shell should load; multiplayer room actions should report that a connection is unavailable. To test multi-device pairing, publish the build to GitHub Pages or serve the built files through a static server. Physical iPhone tests are required for short-code joining, PWA installation, direct ICE connectivity, multiple guests, offline launch, and background/resume behavior.
 
 ### Physical iPhone smoke test
 
