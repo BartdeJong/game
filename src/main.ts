@@ -28,6 +28,7 @@ import { chooseBotBuildAction, chooseBotTurnChoice } from './bot';
 import { parseMessage, type PeerMessage } from './protocol';
 import { Peer, PeerError, PeerErrorType, type DataConnection } from 'peerjs';
 import { createRoomCode, formatRoomCode, normalizeRoomCode } from './room-code';
+import { isLanguage, LANGUAGES, localizeApp, localizeText, type Language } from './i18n';
 import './style.css';
 
 interface HostConnection {
@@ -60,8 +61,11 @@ if (!app) throw new Error('The game page is missing its app container.');
 
 const HOST_RECOVERY_KEY = 'skyline-dice.host-recovery.v1';
 const GUEST_RECOVERY_KEY = 'skyline-dice.guest-recovery.v1';
+const LANGUAGE_PREFERENCE_KEY = 'skyline-dice.language.v1';
 
 let screen: Screen = 'home';
+let language: Language = 'en';
+let hostFormVisible = false;
 let hostState: MatchState | null = null;
 let guestState: MatchState | null = null;
 let hostId = '';
@@ -424,7 +428,14 @@ function headerMarkup(): string {
       <span class="brand-mark" aria-hidden="true">▥</span>
       <span>SKYLINE <span class="brand-light">DICE</span></span>
     </a>
-    <span class="masthead-tag">A game of wind &amp; nerve</span>
+    <div class="masthead-tools">
+      <span class="masthead-tag">A game of wind &amp; nerve</span>
+      <label class="language-picker" for="language-select"><span>Language</span>
+        <select id="language-select" aria-label="Language">${LANGUAGES.map((option) =>
+    `<option value="${option.code}" ${option.code === language ? 'selected' : ''}>${option.label}</option>`,
+  ).join('')}</select>
+      </label>
+    </div>
   </header>`;
 }
 
@@ -442,6 +453,8 @@ function render(): void {
     screen === 'guest-setup' ? renderGuestSetup() :
       screen === 'host' ? renderHost() : renderGuest();
   app.innerHTML = `${headerMarkup()}${noticeMarkup()}${body}${footerMarkup()}`;
+  document.documentElement.lang = language;
+  localizeApp(app, language);
   syncNotificationTimer();
 }
 
@@ -449,7 +462,7 @@ function renderHome(): string {
   return `<section class="hero">
     <div class="hero-copy">
       <p class="eyebrow">BUILD HIGH. BANK WISE.</p>
-      <h1>How far will<br />you <em>rise?</em></h1>
+      <h1>How high will you<br /><em>rise?</em></h1>
       <p class="lead">Grow your skyline one floor at a time. Bank a tower before the wind brings it down.</p>
       <div class="hero-actions">
         <button class="button button-primary" data-action="show-host-form" type="button">Host a game <span aria-hidden="true">↗</span></button>
@@ -478,8 +491,12 @@ function renderHome(): string {
     <span class="connect-icon" aria-hidden="true">⌁</span>
     <div><strong>Playing on phones?</strong><p>Open this page on every device. The host shares one short room code; guests enter it to join. Keep the host tab open and in the foreground.</p></div>
   </section>
-  <div id="host-form-slot"></div>
+  <div id="host-form-slot">${hostFormVisible ? hostFormMarkup() : ''}</div>
 `;
+}
+
+function hostFormMarkup(): string {
+  return `<form id="host-form" class="host-form"><label for="host-name">Your name</label><input id="host-name" name="name" maxlength="18" autocomplete="nickname" required placeholder="e.g. Alex" /><button class="button button-primary" type="submit">Create room</button></form>`;
 }
 
 function recoveryOptionsMarkup(): string {
@@ -1445,6 +1462,7 @@ async function resumeHostRoom(): Promise<void> {
   }
   guestState = null;
   screen = 'host';
+  hostFormVisible = false;
   hostRecoveryAvailable = null;
   notice = 'Restoring your saved room…';
   failure = '';
@@ -1563,6 +1581,33 @@ function resetRoom(): void {
 
 app.addEventListener('change', (event) => {
   const target = event.target;
+  if (target instanceof HTMLSelectElement && target.id === 'language-select') {
+    if (!isLanguage(target.value)) return;
+    const formValues = {
+      hostName: app?.querySelector<HTMLInputElement>('#host-name')?.value,
+      guestName: app?.querySelector<HTMLInputElement>('#guest-name')?.value,
+      guestRoomCode: app?.querySelector<HTMLInputElement>('#guest-room-code')?.value,
+      targetPoints: app?.querySelector<HTMLInputElement>('#target-points')?.value,
+    };
+    language = target.value;
+    try {
+      window.localStorage.setItem(LANGUAGE_PREFERENCE_KEY, language);
+      failure = '';
+    } catch {
+      failure = 'Could not save the language preference in this browser.';
+      notice = '';
+    }
+    render();
+    const hostName = app?.querySelector<HTMLInputElement>('#host-name');
+    const guestNameField = app?.querySelector<HTMLInputElement>('#guest-name');
+    const guestRoomCode = app?.querySelector<HTMLInputElement>('#guest-room-code');
+    const targetPoints = app?.querySelector<HTMLInputElement>('#target-points');
+    if (hostName && formValues.hostName !== undefined) hostName.value = formValues.hostName;
+    if (guestNameField && formValues.guestName !== undefined) guestNameField.value = formValues.guestName;
+    if (guestRoomCode && formValues.guestRoomCode !== undefined) guestRoomCode.value = formValues.guestRoomCode;
+    if (targetPoints && formValues.targetPoints !== undefined) targetPoints.value = formValues.targetPoints;
+    return;
+  }
   if (!(target instanceof HTMLInputElement) || target.id !== 'target-points') return;
   if (!hostState || hostState.status !== 'lobby') return;
   try {
@@ -1587,7 +1632,7 @@ app.addEventListener('click', async (event) => {
       dismissNotification();
     } else if (action === 'home') {
       if (screen === 'host' || screen === 'guest') {
-        const leave = window.confirm('Leave this room? The active match will end for this device.');
+        const leave = window.confirm(localizeText('Leave this room? The active match will end for this device.', language));
         if (!leave) return;
         resetRoom();
         return;
@@ -1595,12 +1640,11 @@ app.addEventListener('click', async (event) => {
       screen = 'home';
       render();
     } else if (action === 'show-host-form') {
-      const slot = app.querySelector<HTMLElement>('#host-form-slot');
-      if (slot) {
-        slot.innerHTML = `<form id="host-form" class="host-form"><label for="host-name">Your name</label><input id="host-name" name="name" maxlength="18" autocomplete="nickname" required placeholder="e.g. Alex" /><button class="button button-primary" type="submit">Create room</button></form>`;
-        slot.querySelector<HTMLInputElement>('#host-name')?.focus();
-      }
+      hostFormVisible = true;
+      render();
+      app.querySelector<HTMLInputElement>('#host-name')?.focus();
     } else if (action === 'show-guest') {
+      hostFormVisible = false;
       screen = 'guest-setup';
       render();
     } else if (action === 'resume-host') {
@@ -1695,6 +1739,7 @@ app.addEventListener('click', async (event) => {
       submittedCount = 0;
       selectedAllocations.clear();
       selectedBankTowerId = null;
+      hostFormVisible = false;
       selectedTurnMode = null;
       submitBotActions();
       maybeResolveRound();
@@ -1744,7 +1789,7 @@ app.addEventListener('click', async (event) => {
       }
       render();
     } else if (action === 'rules') {
-      window.alert(`Players choose and submit turns in parallel. Building rolls one die; add floors to existing towers or start one new tower in an empty slot. Each tower shows its bank value. Use Undo one to take a floor back; you can have up to ${MAX_TOWERS} standing towers. Banking scores one tower for 1 + 2 + … + height and does not roll a die. After everyone submits, the shared two-die wind tests all standing towers. Every tower beyond your first adds +1 wind protection to all your towers, up to +3. First to the target wins.`);
+      window.alert(localizeText(`Players choose and submit turns in parallel. Building rolls one die; add floors to existing towers or start one new tower in an empty slot. Each tower shows its bank value. Use Undo one to take a floor back; you can have up to ${MAX_TOWERS} standing towers. Banking scores one tower for 1 + 2 + … + height and does not roll a die. After everyone submits, the shared two-die wind tests all standing towers. Every tower beyond your first adds +1 wind protection to all your towers, up to +3. First to the target wins.`, language));
     }
   } catch (error) {
     showFailure(error instanceof Error ? error.message : 'That action could not be completed.');
@@ -1790,5 +1835,11 @@ app.addEventListener('submit', async (event) => {
 
 hostRecoveryAvailable = loadRecoveryRecord(HOST_RECOVERY_KEY, parseHostRecovery);
 guestRecoveryAvailable = loadRecoveryRecord(GUEST_RECOVERY_KEY, parseGuestRecovery);
+try {
+  const savedLanguage = window.localStorage.getItem(LANGUAGE_PREFERENCE_KEY);
+  if (isLanguage(savedLanguage)) language = savedLanguage;
+} catch {
+  failure = 'Could not read the saved language preference in this browser.';
+}
 window.addEventListener('pagehide', persistRecovery);
 render();

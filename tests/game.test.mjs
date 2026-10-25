@@ -23,6 +23,7 @@ import {
   formatRoomCode,
   normalizeRoomCode,
 } from '../.test-build/src/room-code.js';
+import { LANGUAGES, localizeText } from '../.test-build/src/i18n.js';
 import { parseMessage } from '../.test-build/src/protocol.js';
 
 function player(id, overrides = {}) {
@@ -64,6 +65,24 @@ function finishRound(state, actionsByPlayer, windDice, turnDice = {}) {
   }
   return resolveRound(current, actions, windDice);
 }
+
+test('localizes interface text in the supported languages and preserves English', () => {
+  assert.deepEqual(LANGUAGES.map((language) => language.code), ['en', 'nl', 'fy', 'de', 'fr', 'es', 'da']);
+  assert.equal(localizeText('Host a game', 'en'), 'Host a game');
+  assert.equal(localizeText('Host a game', 'nl'), 'Start een spel');
+  assert.equal(localizeText('Host a game', 'fy'), 'Begjin in spul');
+  assert.equal(localizeText('Host a game', 'de'), 'Spiel hosten');
+  assert.equal(localizeText('Host a game', 'fr'), 'Héberger une partie');
+  assert.equal(localizeText('Host a game', 'es'), 'Crear partida');
+  assert.equal(localizeText('Host a game', 'da'), 'Vær vært for et spil');
+  assert.equal(localizeText('ROUND 3 · PARALLEL TURNS', 'fr'), 'MANCHE 3 · TOURS SIMULTANÉS');
+  assert.equal(localizeText('Tower, height 4, worth 10 points', 'nl'), 'Toren, hoogte 4, waarde 10 punten');
+  assert.equal(localizeText('Shared wind: 2 plus 5 equals 7', 'es'), 'Viento compartido: 2 más 5 es 7');
+  assert.equal(localizeText('e.g. Alex', 'fr'), 'ex. Alex');
+  assert.equal(localizeText('e.g. 7K2M-Q9RX', 'da'), 'fx 7K2M-Q9RX');
+  assert.equal(localizeText('Every player must choose and submit one action before the shared wind is rolled.', 'de'), 'Alle Spieler müssen eine Aktion wählen und abgeben, bevor der gemeinsame Wind gewürfelt wird.');
+  assert.equal(localizeText('Could not resolve this round.', 'es'), 'No se pudo resolver esta ronda.');
+});
 
 test('uses approved base wind limits and triangular bank score', () => {
   assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 12].map(heightLimit), [12, 11, 10, 9, 8, 7, 6, 6]);

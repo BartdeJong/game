@@ -48,7 +48,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   justify-content: space-between;
 }
 
-.masthead { min-height: 40px; }
+.masthead { min-height: 40px; gap: 12px; }
+.masthead-tools { display: flex; align-items: center; gap: 14px; }
+.language-picker { display: flex; align-items: center; gap: 7px; color: var(--muted); font: .68rem var(--mono); }
+.language-picker select { min-height: 32px; padding: 4px 24px 4px 8px; border: 1px solid var(--line); border-radius: 4px; color: #e9eee7; background: #1a2a27; font: .72rem var(--mono); }
 .brand {
   display: inline-flex;
   align-items: center;
@@ -519,6 +522,11 @@ textarea { resize: vertical; }
   .hero-actions .button { flex: 1; }
   .section-heading { align-items: center; }
   .section-heading .pill { align-self: flex-start; }
+  .masthead { align-items: flex-start; }
+  .masthead-tools { flex-direction: column-reverse; align-items: flex-end; gap: 5px; }
+  .masthead-tag { font-size: .6rem; }
+  .language-picker { font-size: .58rem; }
+  .language-picker select { min-height: 28px; font-size: .65rem; }
   .player-meta { display: none; }
   .tower-board { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; overflow-x: hidden; padding-bottom: 0; }
   .button-row > .button { flex: 1; }
