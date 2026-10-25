@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  beginBankingTurn,
   beginBuildingTurn,
   beginGame,
   beginNextRound,
@@ -10,6 +11,7 @@ import {
   DEFAULT_WIN_POINTS,
   heightLimit,
   isLegalAction,
+  MAX_PLAYERS,
   returnToLobby,
   resolveRound,
   towerPoints,
@@ -50,20 +52,17 @@ function bankAction(towerId) {
 
 function finishRound(state, actionsByPlayer, windDice, turnDice = {}) {
   let current = state;
-  for (let turn = 0; turn < state.players.length; turn += 1) {
-    if (current.status === 'resolution') current = beginNextRound(current);
-    const activePlayer = current.players[current.currentPlayerIndex];
+  const actions = [];
+  for (const activePlayer of state.players) {
     const turnAction = actionsByPlayer[activePlayer.id] ?? buildAction();
-    if (turnAction.kind === 'build' && current.turnMode === 'choose') {
-      current = beginBuildingTurn(current, turnDice[activePlayer.id] ?? 6);
+    if (!current.roundTurnRolls.some((turn) => turn.playerId === activePlayer.id)) {
+      current = turnAction.kind === 'build'
+        ? beginBuildingTurn(current, activePlayer.id, turnDice[activePlayer.id] ?? 6)
+        : beginBankingTurn(current, activePlayer.id);
     }
-    current = resolveRound(
-      current,
-      turnAction,
-      turn === state.players.length - 1 ? windDice : null,
-    );
+    actions.push({ playerId: activePlayer.id, action: turnAction });
   }
-  return current;
+  return resolveRound(current, actions, windDice);
 }
 
 test('uses approved base wind limits and triangular bank score', () => {
@@ -79,27 +78,28 @@ test('defaults the room win target to 80 and validates configured targets', () =
   assert.throws(() => createMatch(player('host'), 80.5), /whole number/);
 });
 
-test('choosing bank does not roll a die; choosing build rolls before placement', () => {
+test('allows rooms with up to ten players', () => {
+  const players = Array.from({ length: MAX_PLAYERS }, (_, index) => player(`p${index}`));
+  const state = { ...createMatch(players[0]), players };
+  assert.equal(beginGame(state).players.length, 10);
+  assert.throws(() => beginGame({ ...state, players: [...players, player('p10')] }), /2–10 players/);
+});
+
+test('players choose build or bank independently, with a die only for builders', () => {
   const state = activeState([
     player('a', { towers: [{ id: 'a1', height: 2 }] }),
     player('b'),
   ]);
-  assert.equal(state.turnMode, 'choose');
-  assert.equal(state.turnDie, null);
-  assert.equal(isLegalAction(state.players[0], bankAction('a1'), state.turnMode, state.turnDie), true);
-  const afterBank = resolveRound(state, bankAction('a1'), null);
-  assert.equal(afterBank.players[0].score, 3);
-  assert.equal(afterBank.roundTurnRolls[0].die, null);
-  assert.equal(afterBank.roundTurnRolls[0].choice, 'bank');
-  assert.equal(afterBank.dice, null);
-
-  const nextTurn = beginNextRound(afterBank);
-  assert.equal(nextTurn.turnMode, 'choose');
-  assert.equal(nextTurn.turnDie, null);
-  const building = beginBuildingTurn(nextTurn, 5);
-  assert.equal(building.turnMode, 'build');
-  assert.equal(building.turnDie, 5);
-  const result = resolveRound(building, buildAction([{ towerId: null, elements: 2 }]), [1, 2]);
+  const bankTurn = beginBankingTurn(state, 'a');
+  const building = beginBuildingTurn(bankTurn, 'b', 5);
+  assert.equal(isLegalAction(state.players[0], bankAction('a1'), 'choose', null), true);
+  assert.throws(() => beginBuildingTurn(building, 'b', 2), /already chosen/);
+  assert.equal(isLegalAction(state.players[1], buildAction([{ towerId: null, elements: 2 }]), 'build', 5), true);
+  const result = resolveRound(building, [
+    { playerId: 'a', action: bankAction('a1') },
+    { playerId: 'b', action: buildAction([{ towerId: null, elements: 2 }]) },
+  ], [1, 2]);
+  assert.equal(result.players[0].score, 3);
   assert.deepEqual(result.history[0].turnRolls, [
     { playerId: 'a', choice: 'bank', die: null },
     { playerId: 'b', choice: 'build', die: 5 },
@@ -117,9 +117,13 @@ test('builds can distribute one rolled die across multiple towers', () => {
     { towerId: null, elements: 1 },
   ]);
   assert.equal(isLegalAction(state.players[0], allocation, 'choose', null), false);
-  const building = beginBuildingTurn(state, 6);
-  assert.equal(isLegalAction(state.players[0], allocation, building.turnMode, building.turnDie), true);
-  const result = finishRound(building, { a: allocation }, [1, 1], { b: 1 });
+  const building = beginBuildingTurn(state, 'a', 6);
+  const withBothRolls = beginBuildingTurn(building, 'b', 1);
+  assert.equal(isLegalAction(state.players[0], allocation, 'build', 6), true);
+  const result = resolveRound(withBothRolls, [
+    { playerId: 'a', action: allocation },
+    { playerId: 'b', action: buildAction() },
+  ], [1, 1]);
   assert.deepEqual(result.players[0].towers.map((tower) => tower.height), [4, 4, 1]);
   assert.equal(result.history[0].actions[0].description, 'added 6 floors');
 });
@@ -129,43 +133,51 @@ test('limits standing towers to six', () => {
   const building = beginBuildingTurn(activeState([
     player('a', { towers: fiveTowers }),
     player('b'),
-  ]), 3);
+  ]), 'a', 3);
   assert.equal(isLegalAction(building.players[0], buildAction([
     { towerId: null, elements: 1 },
-  ]), building.turnMode, building.turnDie), true);
+  ]), 'build', 3), true);
   const fourTowers = fiveTowers.slice(0, 4);
   const twoNewTowerTurn = beginBuildingTurn(activeState([
     player('a', { towers: fourTowers }),
     player('b'),
-  ]), 2);
+  ]), 'a', 2);
   assert.equal(isLegalAction(twoNewTowerTurn.players[0], buildAction([
     { towerId: null, elements: 1, slot: 4 },
     { towerId: null, elements: 1, slot: 5 },
-  ]), twoNewTowerTurn.turnMode, twoNewTowerTurn.turnDie), false);
+  ]), 'build', 2), false);
 
   const sixTowers = [...fiveTowers, { id: 'a5', height: 1 }];
   const full = beginBuildingTurn(activeState([
     player('a', { towers: sixTowers }),
     player('b'),
-  ]), 3);
+  ]), 'a', 3);
   assert.equal(isLegalAction(full.players[0], buildAction([
     { towerId: null, elements: 1 },
-  ]), full.turnMode, full.turnDie), false);
+  ]), 'build', 3), false);
   assert.equal(isLegalAction(full.players[0], buildAction([
     { towerId: 'a0', elements: 1 },
-  ]), full.turnMode, full.turnDie), true);
+  ]), 'build', 3), true);
 });
 
 test('builds a new tower in its selected slot and retains that slot', () => {
   const state = activeState([player('a'), player('b')]);
-  const firstTurn = resolveRound(beginBuildingTurn(state, 3), buildAction([
-    { towerId: null, elements: 3, slot: 5 },
-  ]), null);
+  const firstTurn = resolveRound(
+    beginBuildingTurn(beginBuildingTurn(state, 'a', 3), 'b', 2),
+    [
+      { playerId: 'a', action: buildAction([{ towerId: null, elements: 3, slot: 5 }]) },
+      { playerId: 'b', action: buildAction() },
+    ],
+    [1, 1],
+  );
   assert.equal(firstTurn.players[0].towers[0].slot, 5);
   assert.equal(firstTurn.players[0].towers[0].height, 3);
 
-  const nextTurn = beginBuildingTurn(beginNextRound(firstTurn), 1);
-  const result = resolveRound(nextTurn, buildAction(), [1, 1]);
+  const nextTurn = beginBuildingTurn(beginBuildingTurn(beginNextRound(firstTurn), 'a', 1), 'b', 1);
+  const result = resolveRound(nextTurn, [
+    { playerId: 'a', action: buildAction() },
+    { playerId: 'b', action: buildAction() },
+  ], [1, 1]);
   assert.equal(result.players[0].towers[0].slot, 5);
   assert.equal(isLegalAction(state.players[0], buildAction([
     { towerId: null, elements: 1, slot: 7 },
@@ -180,20 +192,54 @@ test('builds a new tower in its selected slot and retains that slot', () => {
   ]), 'build', 2), false);
 });
 
-test('wind rolls only after every player has chosen and applies once to all towers', () => {
+test('the shared wind waits until every parallel action is submitted', () => {
   const state = activeState([
     player('a', { towers: [{ id: 'a1', height: 7 }] }),
     player('b', { towers: [{ id: 'b1', height: 7 }] }),
   ]);
-  const firstTurn = resolveRound(state, bankAction('a1'), null);
-  assert.equal(firstTurn.dice, null);
-  assert.equal(firstTurn.history.length, 0);
-  const nextTurn = beginNextRound(firstTurn);
-  const building = beginBuildingTurn(nextTurn, 2);
-  const result = resolveRound(building, buildAction(), [3, 3]);
+  const firstTurn = beginBankingTurn(state, 'a');
+  const building = beginBuildingTurn(firstTurn, 'b', 2);
+  assert.throws(() => resolveRound(building, [
+    { playerId: 'a', action: bankAction('a1') },
+  ], [3, 3]), /Every player must choose and submit/);
+  const result = resolveRound(building, [
+    { playerId: 'a', action: bankAction('a1') },
+    { playerId: 'b', action: buildAction() },
+  ], [3, 3]);
   assert.deepEqual(result.history[0].dice, [3, 3]);
   assert.deepEqual(result.history[0].fallenCounts, { a: 0, b: 1 });
   assert.equal(result.history[0].toppled[0].playerId, 'b');
+});
+
+test('a toppled tower is removed and a new tower can be built next round', () => {
+  const state = activeState([
+    player('a', { towers: [{ id: 'a1', height: 7, slot: 0 }] }),
+    player('b'),
+  ]);
+  const firstRound = resolveRound(
+    beginBuildingTurn(beginBuildingTurn(state, 'a', 1), 'b', 1),
+    [
+      { playerId: 'a', action: buildAction([{ towerId: 'a1', elements: 1 }]) },
+      { playerId: 'b', action: buildAction() },
+    ],
+    [6, 6],
+  );
+  assert.deepEqual(firstRound.players[0].towers, []);
+
+  const nextTurn = beginBuildingTurn(
+    beginBuildingTurn(beginNextRound(firstRound), 'a', 2),
+    'b',
+    1,
+  );
+  const newTowerAction = buildAction([{ towerId: null, elements: 2, slot: 0 }]);
+  assert.equal(isLegalAction(nextTurn.players[0], newTowerAction, 'build', 2), true);
+  const secondRound = resolveRound(nextTurn, [
+    { playerId: 'a', action: newTowerAction },
+    { playerId: 'b', action: buildAction() },
+  ], [1, 1]);
+  assert.deepEqual(secondRound.players[0].towers, [
+    { id: 'tower-1', height: 2, slot: 0 },
+  ]);
 });
 
 test('more towers grant capped wind protection to every standing tower', () => {
@@ -218,6 +264,10 @@ test('banking is exclusive, scores the selected tower, and protects it from wind
   assert.equal(result.players[0].bankedTowers, 1);
   assert.deepEqual(result.history[0].banked[0], { playerId: 'a', towerHeight: 2, points: 3 });
   assert.equal(result.history[0].turnRolls[0].die, null);
+  assert.deepEqual(result.history[0].pointsEarned, [
+    { playerId: 'a', points: 3 },
+    { playerId: 'b', points: 0 },
+  ]);
 });
 
 test('checks the win target only after the shared wind resolves', () => {
@@ -225,13 +275,15 @@ test('checks the win target only after the shared wind resolves', () => {
     player('a', { score: 10, towers: [{ id: 'a1', height: 2 }] }),
     player('b'),
   ], 13);
-  const firstTurn = resolveRound(state, bankAction('a1'), null);
-  assert.equal(firstTurn.status, 'resolution');
-  assert.equal(firstTurn.players[0].score, 13);
-  assert.equal(firstTurn.winnerIds.length, 0);
-  const nextTurn = beginNextRound(firstTurn);
-  const result = resolveRound(beginBuildingTurn(nextTurn, 2), buildAction(), [1, 1]);
+  const firstTurn = beginBankingTurn(state, 'a');
+  const secondTurn = beginBuildingTurn(firstTurn, 'b', 2);
+  assert.equal(secondTurn.players[0].score, 10);
+  const result = resolveRound(secondTurn, [
+    { playerId: 'a', action: bankAction('a1') },
+    { playerId: 'b', action: buildAction() },
+  ], [1, 1]);
   assert.equal(result.status, 'finished');
+  assert.equal(result.players[0].score, 13);
   assert.equal(result.players[0].roomWins, 1);
   assert.deepEqual(result.winnerIds, ['a']);
 });
@@ -245,16 +297,14 @@ test('rematches and the room lobby keep cumulative wins and target settings', ()
   const rematch = beginRematch(finished);
   assert.equal(rematch.status, 'choice');
   assert.equal(rematch.round, 1);
-  assert.equal(rematch.turnMode, 'choose');
-  assert.equal(rematch.turnDie, null);
+  assert.deepEqual(rematch.roundTurnRolls, []);
   assert.equal(rematch.targetPoints, 10);
   assert.equal(rematch.players[0].score, 0);
   assert.equal(rematch.players[0].roomWins, 1);
 
   const lobby = returnToLobby(finished);
   assert.equal(lobby.status, 'lobby');
-  assert.equal(lobby.turnDie, null);
-  assert.equal(lobby.turnMode, null);
+  assert.deepEqual(lobby.roundTurnRolls, []);
   assert.equal(lobby.targetPoints, 10);
   assert.equal(lobby.players[0].roomWins, 1);
 });
@@ -262,14 +312,16 @@ test('rematches and the room lobby keep cumulative wins and target settings', ()
 test('rejects early die rolls, invalid allocations, and invalid wind', () => {
   const state = activeState([player('a'), player('b')]);
   const earlyBuild = buildAction([{ towerId: null, elements: 1 }]);
-  assert.equal(isLegalAction(state.players[0], earlyBuild, state.turnMode, state.turnDie), false);
-  assert.throws(() => beginBuildingTurn(state, 7), /1 to 6/);
-  const building = beginBuildingTurn(state, 3);
+  assert.equal(isLegalAction(state.players[0], earlyBuild, 'choose', null), false);
+  assert.throws(() => beginBuildingTurn(state, 'a', 7), /1 to 6/);
+  const building = beginBuildingTurn(state, 'a', 3);
   assert.equal(isLegalAction(state.players[0], buildAction([{ towerId: null, elements: 4 }]), 'build', 3), false);
   assert.equal(isLegalAction(state.players[0], buildAction([{ towerId: 'missing', elements: 1 }]), 'build', 3), false);
-  const afterFirstTurn = resolveRound(building, buildAction([{ towerId: null, elements: 1 }]), null);
-  const finalTurn = beginBuildingTurn(beginNextRound(afterFirstTurn), 3);
-  assert.throws(() => resolveRound(finalTurn, buildAction(), [1, 7]), /1 to 6/);
+  const finalTurn = beginBuildingTurn(building, 'b', 3);
+  assert.throws(() => resolveRound(finalTurn, [
+    { playerId: 'a', action: buildAction([{ towerId: null, elements: 1 }]) },
+    { playerId: 'b', action: buildAction() },
+  ], [1, 7]), /1 to 6/);
 });
 
 test('creates and normalizes short room codes', () => {
@@ -296,13 +348,43 @@ test('player views hide opponents towers but preserve public wind-topple data', 
     player('a'),
     player('b', { towers: [{ id: 'b1', height: 7 }] }),
   ]);
-  const firstTurn = resolveRound(beginBuildingTurn(state, 1), buildAction([{ towerId: null, elements: 1 }]), null);
-  const nextTurn = beginNextRound(firstTurn);
-  const result = resolveRound(beginBuildingTurn(nextTurn, 1), buildAction(), [6, 6]);
+  const firstTurn = beginBuildingTurn(beginBuildingTurn(state, 'a', 1), 'b', 1);
+  const result = resolveRound(firstTurn, [
+    { playerId: 'a', action: buildAction([{ towerId: null, elements: 1 }]) },
+    { playerId: 'b', action: buildAction() },
+  ], [6, 6]);
   const view = createPlayerView(result, 'a');
   assert.deepEqual(view.players.find((item) => item.id === 'b').towers, []);
   assert.deepEqual(view.history[0].toppled.map((item) => item.playerId), ['a', 'b']);
   assert.deepEqual(view.history[0].fallenCounts, { a: 1, b: 1 });
+});
+
+test('player views reveal round points without exposing opponents banking details', () => {
+  const state = activeState([
+    player('a', { towers: [{ id: 'a1', height: 2 }] }),
+    player('b', { towers: [{ id: 'b1', height: 3 }] }),
+  ]);
+  const firstTurn = beginBankingTurn(beginBuildingTurn(state, 'b', 1), 'a');
+  const result = resolveRound(firstTurn, [
+    { playerId: 'a', action: bankAction('a1') },
+    { playerId: 'b', action: buildAction() },
+  ], [1, 1]);
+  const view = createPlayerView(result, 'a');
+  assert.deepEqual(view.history[0].pointsEarned, [
+    { playerId: 'a', points: 3 },
+    { playerId: 'b', points: 0 },
+  ]);
+  assert.deepEqual(view.history[0].banked, [
+    { playerId: 'a', towerHeight: 2, points: 3 },
+  ]);
+  assert.deepEqual(view.history[0].actions.map((action) => action.playerId), ['a']);
+  const update = parseMessage(JSON.stringify({
+    type: 'state',
+    state: view,
+    submittedCount: 2,
+    playerId: 'a',
+  }));
+  assert.deepEqual(update.state.history[0].pointsEarned, view.history[0].pointsEarned);
 });
 
 test('protocol preserves per-player recovery credentials and submission state', () => {
@@ -319,4 +401,30 @@ test('protocol preserves per-player recovery credentials and submission state', 
     isSubmitted: true,
   };
   assert.deepEqual(parseMessage(JSON.stringify(update)), update);
+
+  const parallelRound = beginBuildingTurn(
+    beginBankingTurn(activeState([player('host'), player('guest')]), 'guest'),
+    'host',
+    4,
+  );
+  const hostView = createPlayerView(parallelRound, 'host');
+  assert.deepEqual(hostView.roundTurnRolls, [
+    { playerId: 'guest', choice: 'bank', die: null },
+    { playerId: 'host', choice: 'build', die: 4 },
+  ]);
+  assert.deepEqual(parseMessage(JSON.stringify({
+    type: 'state',
+    state: hostView,
+    submittedCount: 0,
+    playerId: 'host',
+  })).state.roundTurnRolls, hostView.roundTurnRolls);
+
+  const tenPlayers = Array.from({ length: MAX_PLAYERS }, (_, index) => player(`p${index}`));
+  const fullLobby = { ...createMatch(tenPlayers[0]), players: tenPlayers };
+  assert.equal(parseMessage(JSON.stringify({
+    type: 'state',
+    state: fullLobby,
+    submittedCount: 0,
+    playerId: 'p0',
+  })).state.players.length, MAX_PLAYERS);
 });

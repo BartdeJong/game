@@ -1,5 +1,6 @@
 import {
   beginRematch,
+  beginBankingTurn,
   beginGame,
   beginBuildingTurn,
   beginNextRound,
@@ -95,8 +96,7 @@ let trackedNotification = '';
 let autoRollTimer: number | null = null;
 let botResolveTimer: number | null = null;
 
-const NEXT_TURN_DELAY_MS = 3_000;
-const ROUND_WIND_DISPLAY_MS = 5_000;
+const ROUND_WIND_DISPLAY_MS = 8_000;
 const BOT_TURN_DELAY_MS = 2_500;
 const NOTICE_DISPLAY_MS = 5_000;
 const FAILURE_DISPLAY_MS = 10_000;
@@ -180,13 +180,20 @@ function parseHostRecovery(value: unknown): HostRecoveryRecord {
     const [playerId, actionValue] = entry;
     const actionMessage = parseMessage(JSON.stringify({ type: 'action', playerId, action: actionValue }));
     const player = playersById.get(playerId);
+    const turn = state.roundTurnRolls.find((item) => item.playerId === playerId);
     if (
       actionMessage.type !== 'action' ||
       !player ||
+      !turn ||
       submittedIds.has(playerId) ||
       state.status !== 'choice' ||
-      state.players[state.currentPlayerIndex]?.id !== playerId ||
-      !isLegalAction(player, actionMessage.action, state.turnMode, state.turnDie)
+      turn.choice !== actionMessage.action.kind ||
+      !isLegalAction(
+        player,
+        actionMessage.action,
+        turn.choice === 'build' ? 'build' : 'choose',
+        turn.die,
+      )
     ) {
       throw new Error('The saved turn action cannot be resumed.');
     }
@@ -363,7 +370,6 @@ function connectedPlayers(state: MatchState): Player[] {
 function showNotice(message: string): void {
   notice = message;
   failure = '';
-  selectedAllocations.clear();
   selectedBankTowerId = null;
   selectedTurnMode = null;
   guestBuildRequested = false;
@@ -450,7 +456,7 @@ function renderHome(): string {
         <button class="button button-secondary" data-action="show-guest" type="button">Join a game</button>
       </div>
       ${recoveryOptionsMarkup()}
-      <p class="quiet-note">2–5 players · 15–20 min · no app to install</p>
+      <p class="quiet-note">2–10 players · 15–20 min · no app to install</p>
     </div>
     <div class="hero-art" aria-hidden="true">
       <div class="sun"></div><div class="wind wind-one"></div><div class="wind wind-two"></div>
@@ -580,57 +586,108 @@ function playerMarkup(player: Player, hostControls: boolean): string {
   </article>`;
 }
 
+function roundRollBarMarkup(state: MatchState, readyCount: number): string {
+  const latestRound = state.history.at(-1);
+  const showRoundScores = state.status === 'resolution' || state.status === 'finished';
+  return `<section class="round-roll-bar" aria-label="Player rolls and round scores">
+    <div class="round-roll-heading"><strong>PLAYER ROLLS &amp; SCORES</strong><span>${readyCount}/${state.players.length} moves submitted</span></div>
+    <div class="round-roll-results" style="--player-columns:${Math.min(state.players.length, 5)}">${state.players.map((player) => {
+      const roll = state.roundTurnRolls.find((turn) => turn.playerId === player.id);
+      const result = roll?.choice === 'build'
+        ? `<span class="round-roll-die">${dieMarkup(roll.die)}</span><small>${roll.die} floors</small>`
+        : roll?.choice === 'bank'
+          ? '<span class="round-roll-bank">BANK</span><small>No die</small>'
+          : '<span class="round-roll-pending">—</span><small>Choosing</small>';
+      const pointsEarned = showRoundScores
+        ? latestRound?.pointsEarned?.find((entry) => entry.playerId === player.id)?.points
+        : undefined;
+      const score = `<span class="round-roll-player-score"><strong>${player.score}</strong><small>PTS TOTAL</small></span>`;
+      const roundScore = pointsEarned === undefined
+        ? ''
+        : `<small class="round-roll-score" aria-label="${pointsEarned} points this round">${pointsEarned > 0 ? '+' : ''}${pointsEarned} pts</small>`;
+      return `<article class="round-roll-entry ${roll ? 'round-roll-ready' : ''}" title="${escapeHtml(player.name)}">
+        <strong>${escapeHtml(player.name)}</strong>${result}${score}${roundScore}
+      </article>`;
+    }).join('')}</div>
+  </section>`;
+}
+
 function renderGame(state: MatchState, isHost: boolean): string {
   const playerId = isHost ? hostId : guestId;
   const me = state.players.find((player) => player.id === playerId);
-  const activePlayer = state.players[state.currentPlayerIndex];
-  const isMyTurn = activePlayer?.id === playerId;
+  const myRoll = state.roundTurnRolls.find((turn) => turn.playerId === playerId);
   const isSubmitted = isHost ? submitted.has(hostId) : guestSubmitted;
-  const canChoose = state.status === 'choice' && isMyTurn && !isSubmitted && !!me;
+  const canChoose = state.status === 'choice' && !myRoll && !isSubmitted && !!me?.connected;
+  const canBuild = state.status === 'choice' && myRoll?.choice === 'build' && !isSubmitted;
   const latestRound = state.history.at(-1);
-  const choices = state.status === 'choice' && canChoose && state.turnMode === 'choose'
+  const choices = state.status === 'choice' && canChoose
     ? selectedTurnMode === 'bank'
       ? `<div class="action-card turn-choice-card"><p class="eyebrow">BANKING</p><h2>Choose a tower to bank</h2><button class="text-button" data-action="switch-to-build" type="button">Choose building instead</button></div>`
       : `<div class="action-card turn-choice-card">
           <p class="eyebrow">CHOOSE YOUR TURN</p><h2>Build or bank?</h2>
           ${guestBuildRequested ? '<p class="quiet-note">Rolling the die…</p>' : `<div class="turn-choice-buttons"><button class="button button-primary" data-action="choose-build" type="button">Build <small>Roll a die</small></button><button class="button button-secondary" data-action="choose-bank" type="button" ${me?.towers.length ? '' : 'disabled'}>Bank <small>Choose a tower</small></button></div>`}
         </div>`
-    : state.status === 'choice' && !canChoose
-      ? `<div class="wait-card"><span class="spinner" aria-hidden="true"></span><div><strong>${escapeHtml(activePlayer?.name ?? 'A player')} is taking their turn</strong><p>${isSubmitted ? 'Their choice is locked in.' : state.turnMode === 'build' ? 'They are placing floors from their die roll.' : 'They are choosing to build or bank.'}</p></div></div>`
+    : state.status === 'choice' && isSubmitted
+      ? `<div class="wait-card"><span class="spinner" aria-hidden="true"></span><div><strong>Your move is locked in.</strong><p>Waiting for every player before the shared wind.</p></div></div>`
       : '';
   const toppleAnimation = state.dice !== null && latestRound?.toppled.length
-    ? `<div class="topple-animation" role="status" aria-live="polite"><span class="falling-tower" aria-hidden="true">▥</span><strong>The wind toppled ${latestRound.toppled.length} tower${latestRound.toppled.length === 1 ? '' : 's'}!</strong><span>${latestRound.toppled.map((item) => escapeHtml(state.players.find((player) => player.id === item.playerId)?.name ?? 'A player')).join(', ')}</span></div>`
+    ? `<div class="topple-animation" role="status" aria-live="polite">
+        <span class="falling-tower" aria-hidden="true">▥</span>
+        <strong>The wind toppled ${latestRound.toppled.length} tower${latestRound.toppled.length === 1 ? '' : 's'}!</strong>
+        <div class="topple-wind-result" role="img" aria-label="Shared wind: ${state.dice[0]} plus ${state.dice[1]} equals ${state.dice[0] + state.dice[1]}">
+          <span>WIND</span><div class="dice-pair">${dieMarkup(state.dice[0])}<b>+</b>${dieMarkup(state.dice[1])}</div><b>=</b><strong>${state.dice[0] + state.dice[1]}</strong>
+        </div>
+      </div>`
     : '';
   const reconnectHost = isHost && hostRoomCode && !hostPeer && !creatingRoomCode
     ? '<section class="resolution-card"><p class="lead-small">The room is not connected to the signaling service.</p><button class="button button-primary" data-action="retry-host-room" type="button">Reconnect saved room</button></section>'
     : '';
 
+  const rollCount = state.status === 'choice'
+    ? isHost ? submitted.size : submittedCount
+    : state.players.length;
+  const winners = state.status === 'finished'
+    ? state.players.filter((player) => state.winnerIds.includes(player.id))
+    : [];
+  const outcomeMarkup = state.status === 'resolution'
+    ? `<section class="round-result-banner round-result-round" role="status" aria-live="polite">
+        <span class="round-result-mark" aria-hidden="true">✓</span>
+        <div class="round-result-copy"><p class="eyebrow">ROUND ${state.round} COMPLETE</p><h2>The shared wind has passed.</h2><p>The next round starts automatically in ${ROUND_WIND_DISPLAY_MS / 1000} seconds.</p></div>
+        ${latestRound ? fallSummaryMarkup(latestRound, state, playerId) : ''}
+      </section>`
+    : state.status === 'finished'
+      ? `<section class="round-result-banner round-result-winner" role="status" aria-live="polite">
+          <span class="round-result-mark" aria-hidden="true">★</span>
+          <div class="round-result-copy"><p class="eyebrow">GAME OVER · TARGET ${state.targetPoints}</p>
+            <h2>${winners.length > 1 ? 'Shared victory!' : `${escapeHtml(winners[0]?.name ?? 'A player')} wins!`}</h2>
+            <div class="winner-result-list">${winners.map((winner) => `<span><strong>${escapeHtml(winner.name)}</strong><b>${winner.score} pts</b></span>`).join('')}</div>
+            <p class="winner-reward">${winners.length > 1 ? 'Each winner earns one room win.' : 'The winner earns one room win.'}</p>
+          </div>
+          ${latestRound ? fallSummaryMarkup(latestRound, state, playerId) : ''}
+          ${isHost
+            ? `<div class="rematch-actions"><button class="button button-primary button-full" data-action="rematch" type="button" ${state.players.length < MIN_PLAYERS || state.players.some((player) => !player.connected) ? 'disabled' : ''}>Play again in this room</button><button class="button button-secondary button-full" data-action="return-lobby" type="button">Return to room lobby</button></div>`
+            : '<p class="quiet-note">The host can start another game in this room or return to the lobby.</p>'}
+        </section>`
+      : '';
+
   return `<section class="game-panel board-panel">
-    <div class="section-heading"><div><p class="eyebrow">${state.status === 'finished' ? 'GAME OVER' : `ROUND ${state.round} · PLAYER ${state.currentPlayerIndex + 1}/${state.players.length}`}</p><h1>${state.status === 'finished' ? 'The skyline is <em>set.</em>' : `${escapeHtml(activePlayer?.name ?? 'Next player')}'s <em>turn.</em>`}</h1></div>
+    ${me ? towerBoardMarkup(me, state, canChoose, canBuild, selectedTurnMode, isSubmitted) : ''}
+    ${roundRollBarMarkup(state, rollCount)}
+    <div class="section-heading"><div><p class="eyebrow">${state.status === 'finished' ? 'GAME OVER' : `ROUND ${state.round} · PARALLEL TURNS`}</p><h1>${state.status === 'finished' ? 'The skyline is <em>set.</em>' : state.status === 'resolution' ? 'The shared wind has <em>passed.</em>' : 'Everyone’s <em>turn.</em>'}</h1></div>
       ${state.dice ? `<div class="wind-card"><span>ROUND ${latestRound?.round ?? state.round} WIND</span><div class="dice-pair">${dieMarkup(state.dice[0])}${dieMarkup(state.dice[1])}</div><strong>${state.dice[0] + state.dice[1]}</strong><small>shared wind</small></div>` : ''}
     </div>
-    ${state.status === 'choice' ? `<p class="lead-small">Reach ${state.targetPoints} points to win. Choose banking or building first. Building rolls one die; banking does not.</p>` : ''}
+    ${state.status === 'choice' ? `<p class="lead-small">Reach ${state.targetPoints} points to win. Choose to build or bank at the same time as the other players. Building rolls one die; banking does not.</p>` : ''}
     ${reconnectHost}
-    ${state.status === 'choice' && state.turnMode === 'build' && state.turnDie !== null ? `<div class="turn-roll-card" aria-live="polite"><span class="eyebrow">${escapeHtml(activePlayer?.name ?? 'Player')} rolled</span><div class="turn-die">${dieMarkup(state.turnDie)}</div><strong>${state.turnDie} floor${state.turnDie === 1 ? '' : 's'} available</strong></div>` : ''}
     ${choices}
     ${toppleAnimation}
-    ${me ? towerBoardMarkup(me, state, canChoose, selectedTurnMode) : ''}
+    ${outcomeMarkup}
     <section class="scoreboard" aria-label="Players and scores">
-      ${state.players.map((player, index) => `<article class="score-card ${player.id === playerId ? 'score-card-me' : ''} ${state.status === 'choice' && index === state.currentPlayerIndex ? 'score-card-active' : ''}">
+      ${state.players.map((player) => `<article class="score-card ${player.id === playerId ? 'score-card-me' : ''}">
         <div class="score-card-top"><span class="player-avatar">${escapeHtml(player.name.slice(0, 1).toUpperCase())}</span><span class="score-name">${escapeHtml(player.name)}${player.id === playerId ? ' <span class="you-tag">YOU</span>' : ''}${player.isBot ? ' <span class="robot-tag">ROBOT</span>' : ''}${!player.connected ? ' <span class="host-tag">OFFLINE</span>' : ''}</span></div>
         <div class="score-number">${player.score}<small> pts</small></div>
         <div class="room-win-count">${player.roomWins} room win${player.roomWins === 1 ? '' : 's'}</div>
-        ${state.status === 'choice' && index === state.currentPlayerIndex ? '<div class="active-turn-tag">TAKING TURN</div>' : ''}
         ${isHost && player.id !== hostId && !player.connected ? `<button class="text-button danger-text" data-action="remove-player" data-player="${escapeHtml(player.id)}" type="button">Remove disconnected player</button>` : ''}
       </article>`).join('')}
-    </section>
-    ${state.status === 'resolution' ? `<section class="resolution-card"><p class="eyebrow">${state.dice ? `ROUND ${state.round} COMPLETE` : `PLAYER ${state.currentPlayerIndex + 1} COMPLETE`}</p><h2>${state.dice ? 'The shared wind has passed.' : 'The wind waits.'}</h2>${state.dice && latestRound ? fallSummaryMarkup(latestRound, state, playerId) : ''}
-      <p class="quiet-note">${state.dice ? 'The next round starts automatically in 5 seconds.' : 'Every player takes one turn before the shared wind is rolled. The next turn starts in 3 seconds.'}</p></section>` : ''}
-    ${state.status === 'finished' ? `<section class="resolution-card winner-card"><p class="eyebrow">FINAL STANDINGS · TARGET ${state.targetPoints}</p><h2>${state.winnerIds.length > 1 ? 'A shared victory.' : `${escapeHtml(state.players.find((player) => player.id === state.winnerIds[0])?.name ?? 'A player')} wins!`}</h2><p>${state.winnerIds.length > 1 ? 'The tied winners each earn one room win.' : 'The winner earns one room win.'}</p>${isHost
-      ? `<div class="rematch-actions"><button class="button button-primary button-full" data-action="rematch" type="button" ${state.players.length < MIN_PLAYERS || state.players.some((player) => !player.connected) ? 'disabled' : ''}>Play again in this room</button><button class="button button-secondary button-full" data-action="return-lobby" type="button">Return to room lobby</button></div>`
-      : '<p class="quiet-note">The host can start another game in this room or return to the lobby.</p>'}</section>` : ''}
-    <section class="history-card"><div class="history-heading"><p class="eyebrow">THE BUILD LOG</p><span>${state.history.length} round${state.history.length === 1 ? '' : 's'}</span></div>
-      ${state.history.length ? `<ol class="history-list">${[...state.history].reverse().map((round) => historyMarkup(round, state, playerId)).join('')}</ol>` : '<p class="quiet-note">Each round’s wind and tower falls will appear here.</p>'}
     </section>
     ${state.status !== 'finished' ? `<details class="help-details"><summary>Rules &amp; wind limits</summary>${rulesMarkup()}</details>` : ''}
   </section>`;
@@ -670,14 +727,22 @@ function towerBoardMarkup(
   player: Player,
   state: MatchState,
   canChoose: boolean,
+  canBuild: boolean,
   selectedMode: 'build' | 'bank' | null,
+  isSubmitted: boolean,
 ): string {
   const wind = state.dice ? state.dice[0] + state.dice[1] : null;
-  const turnDie = state.turnDie ?? 0;
-  const building = canChoose && state.turnMode === 'build';
-  const banking = canChoose && state.turnMode === 'choose' && selectedMode === 'bank';
-  const spent = Array.from(selectedAllocations.values()).reduce((sum, value) => sum + value, 0);
-  const pendingTowerCount = Array.from(selectedAllocations.keys()).filter((key) => key.startsWith('new-')).length;
+  const turnDie = state.roundTurnRolls.find((turn) => turn.playerId === player.id)?.die ?? 0;
+  const building = canBuild;
+  const banking = canChoose && selectedMode === 'bank';
+  const showBuildChanges = building || (isSubmitted &&
+    state.roundTurnRolls.some((turn) => turn.playerId === player.id && turn.choice === 'build'));
+  const spent = showBuildChanges
+    ? Array.from(selectedAllocations.values()).reduce((sum, value) => sum + value, 0)
+    : 0;
+  const pendingTowerCount = showBuildChanges
+    ? Array.from(selectedAllocations.keys()).filter((key) => key.startsWith('new-')).length
+    : 0;
   const hasFloorBudget = building && spent < turnDie;
   const canAddNewTower = hasFloorBudget &&
     pendingTowerCount === 0 &&
@@ -689,46 +754,43 @@ function towerBoardMarkup(
     : '';
 
   const existingTowerSlot = (tower: Tower) => {
-    const additionalHeight = selectedAllocations.get(tower.id) ?? 0;
-    const height = tower.height + (building ? additionalHeight : 0);
+    const additionalHeight = showBuildChanges ? selectedAllocations.get(tower.id) ?? 0 : 0;
+    const height = tower.height + additionalHeight;
     const limit = heightLimit(height) + towerShield(player.towers.length + pendingTowerCount);
     const atRisk = wind !== null && wind >= limit;
     const selected = banking && selectedBankTowerId === tower.id;
     const disabled = !building && !banking || (building && !hasFloorBudget);
-    const prompt = building
-      ? additionalHeight ? `+${additionalHeight} this turn · click to add more` : 'Click to add a floor'
-      : banking ? `Bank for +${towerPoints(tower.height)} points` : '';
+    const worth = towerPoints(height);
     return `<div class="tower-slot-card">
-      <button class="tower-slot ${selected ? 'tower-slot-selected' : ''} ${additionalHeight ? 'tower-slot-pending' : ''}" data-action="tower-slot" data-slot="${escapeHtml(tower.id)}" type="button" aria-label="Tower, height ${height}. ${prompt}" ${disabled ? 'disabled' : ''}>
+      <button class="tower-slot ${selected ? 'tower-slot-selected' : ''} ${additionalHeight ? 'tower-slot-pending' : ''}" data-action="tower-slot" data-slot="${escapeHtml(tower.id)}" type="button" aria-label="Tower, height ${height}, worth ${worth} points" ${disabled ? 'disabled' : ''}>
         <span class="tower-body">
           <span class="tower-visual ${atRisk ? 'tower-visual-risk' : ''}" aria-hidden="true">${floorsMarkup(height)}</span>
           ${windScaleMarkup(limit, wind)}
         </span>
-        ${prompt ? `<span class="tower-slot-prompt">${prompt}</span>` : ''}
+        <span class="tower-points-label">${worth} pts</span>
       </button>${undoButton(tower.id, additionalHeight)}
     </div>`;
   };
   const emptyTowerSlot = (index: number) => {
     const key = `new-${index}`;
-    const height = selectedAllocations.get(key);
+    const height = showBuildChanges ? selectedAllocations.get(key) : undefined;
     const pending = height !== undefined;
     const disabled = pending ? !hasFloorBudget : !canAddNewTower;
     const limit = pending
       ? heightLimit(height) + towerShield(player.towers.length + pendingTowerCount)
       : 0;
     const atRisk = pending && wind !== null && wind >= limit;
-    const slotPrompt = pending
-      ? `New tower · height ${height} · click to add more`
-      : pendingTowerCount > 0
-        ? 'Only one new tower per turn'
-        : 'Click to build a new tower here';
+    const worth = pending ? towerPoints(height) : 0;
+    const accessibleLabel = pending
+      ? `New tower, height ${height}, worth ${worth} points`
+      : 'Empty tower slot, worth 0 points';
     return `<div class="tower-slot-card">
-      <button class="tower-slot ${pending ? 'tower-slot-pending' : 'tower-slot-placeholder'}" data-action="tower-slot" data-slot="${key}" type="button" aria-label="${slotPrompt}" ${disabled ? 'disabled' : ''}>
+      <button class="tower-slot ${pending ? 'tower-slot-pending' : 'tower-slot-placeholder'}" data-action="tower-slot" data-slot="${key}" type="button" aria-label="${accessibleLabel}" ${disabled ? 'disabled' : ''}>
         <span class="tower-body">
           <span class="tower-visual ${pending && atRisk ? 'tower-visual-risk' : ''} ${pending ? '' : 'tower-visual-empty'}" aria-hidden="true">${pending ? floorsMarkup(height) : '<span>＋</span>'}</span>
           ${pending ? windScaleMarkup(limit, wind) : ''}
         </span>
-        <span class="tower-slot-prompt">${pending ? 'Click to add more floors' : 'Dotted slot · build here'}</span>
+        <span class="tower-points-label">${worth} pts</span>
       </button>${undoButton(key, height ?? 0)}
     </div>`;
   };
@@ -755,40 +817,35 @@ function towerBoardMarkup(
 }
 
 function fallSummaryMarkup(round: MatchState['history'][number], state: MatchState, viewerId: string): string {
-  return `<ul class="fall-summary">${state.players.map((player) => {
+  const affectedPlayers = state.players.filter((player) => (round.fallenCounts[player.id] ?? 0) > 0);
+  if (affectedPlayers.length === 0) return '<p class="fall-summary-empty">No towers toppled this round.</p>';
+  return `<ul class="fall-summary" aria-label="Players whose towers toppled">${affectedPlayers.map((player) => {
     const count = round.fallenCounts[player.id] ?? 0;
     const label = player.id === viewerId ? 'Your towers' : escapeHtml(player.name);
-    return `<li><span>${label}</span><strong>${count} tower${count === 1 ? '' : 's'} fell</strong></li>`;
+    return `<li><span>${label}</span><strong>${count} tower${count === 1 ? '' : 's'} toppled</strong></li>`;
   }).join('')}</ul>`;
 }
 
-function historyMarkup(round: MatchState['history'][number], state: MatchState, viewerId: string): string {
-  const name = (id: string) => state.players.find((player) => player.id === id)?.name ?? 'A player';
-  const ownAction = round.actions.find((action) => action.playerId === viewerId);
-  const ownBanked = round.banked.find((banked) => banked.playerId === viewerId);
-  const ownToppled = round.toppled.filter((tower) => tower.playerId === viewerId);
-  const personalSummary = [
-    ownAction ? `You ${ownAction.description.toLowerCase()}` : '',
-    ownBanked ? `You banked +${ownBanked.points}` : '',
-    ownToppled.length ? `Your tower${ownToppled.length === 1 ? '' : 's'} fell` : '',
-  ].filter(Boolean).join(' · ') || 'Your towers held.';
-  const otherFallSummary = state.players
-    .filter((player) => player.id !== viewerId)
-    .map((player) => `${name(player.id)}: ${round.fallenCounts[player.id] ?? 0} fell`)
-    .join(' · ');
-  const turnRolls = round.turnRolls.map((turn) => {
-    const turnPlayer = state.players.find((player) => player.id === turn.playerId)?.name ?? 'A player';
-    return `${escapeHtml(turnPlayer)} ${turn.choice === 'build' ? `build d${turn.die}` : 'bank (no die)'}`;
-  }).join(' · ');
-  return `<li><div class="history-round"><b>R${round.round}</b><span class="history-dice">wind ${round.dice[0]} + ${round.dice[1]} = ${round.wind}</span></div>
-    <p class="history-dice">Turn rolls: ${turnRolls}</p>
-    <p>${escapeHtml(personalSummary)}</p>${otherFallSummary ? `<p class="history-bad">${escapeHtml(otherFallSummary)}</p>` : ''}</li>`;
-}
-
 function rulesMarkup(): string {
-  return `<p>The host sets a room win target from ${MIN_WIN_POINTS} to ${MAX_WIN_POINTS} points. Players take turns in order and first choose to build or bank. Building rolls one six-sided die; click existing towers to add floors or a dotted slot to start one new tower in that position, spending up to that many floors across towers. Use the Undo one button to take a floor back. You can have up to ${MAX_TOWERS} standing towers. Banking scores one tower's triangular value (1 + 2 + … + height) and does not roll a die. After all players have taken a turn, two wind dice are rolled and every unbanked tower is tested. Extra standing towers shield your whole skyline: each tower beyond the first adds +1 to every tower's wind limit, up to +${MAX_TOWER_SHIELD} protection. Tied high scores share the win.</p>
-    <div class="limit-table"><span>Height</span><span>Base wind limit</span>${[1, 2, 3, 4, 5, 6, 7].map((height) => `<b>${height === 7 ? '7+' : height}</b><b>${heightLimit(height)}+</b>`).join('')}</div>
-    <p class="quiet-note">Build rolls and the current turn are shared with everyone. The next turn starts automatically after 3 seconds.</p>`;
+  return `<div class="rules-sections">
+    <section class="rules-section"><h3>Goal and round flow</h3>
+      <p>Reach the host's target of ${MIN_WIN_POINTS}–${MAX_WIN_POINTS} points (80 by default). Everyone chooses at the same time. After all moves are submitted, the host rolls the shared wind, scores banked towers, and checks every unbanked tower. The wind result stays visible for 8 seconds before the next round.</p>
+    </section>
+    <section class="rules-section"><h3>Build</h3>
+      <p>Choose <strong>Build</strong> to roll one six-sided die. Spend up to that result in floors across your existing towers; you may also start at most one new tower in an empty slot using the same floor budget. You may spend fewer floors than you rolled. Use <strong>Undo one</strong> before submitting to remove a floor. You can have up to ${MAX_TOWERS} standing towers. Tower point values are shown below them.</p>
+    </section>
+    <section class="rules-section"><h3>Bank</h3>
+      <p>Choose <strong>Bank</strong> and select one tower. It scores <strong>height × (height + 1) ÷ 2</strong> points and is protected from this round's wind. Banking replaces building for that turn and does not roll a die.</p>
+    </section>
+    <section class="rules-section rules-wind-section"><h3>Wind and tower protection</h3>
+      <p>The two shared dice are added together for a wind strength from 2 to 12. An unbanked tower topples when the wind reaches or exceeds its limit. Each standing tower beyond the first adds +1 protection to every tower, up to +${MAX_TOWER_SHIELD}. Protection is calculated before the wind tests the skyline.</p>
+      <div class="limit-table"><span>Height</span><span>Topples at wind</span>${[1, 2, 3, 4, 5, 6, 7].map((height) => `<b>${height === 7 ? '7+' : height}</b><b>${heightLimit(height)} or higher</b>`).join('')}</div>
+    </section>
+    <section class="rules-section"><h3>Winning</h3>
+      <p>If a player reaches the target after a round resolves, the player with the highest score wins. Tied high scores share the victory and each winner earns one room win.</p>
+    </section>
+  </div>
+  <p class="quiet-note">Everyone can see the rolls, total scores, round score changes, and shared wind. Opponents' tower layouts remain private.</p>`;
 }
 
 async function copyCode(selector: string, successMessage: string): Promise<void> {
@@ -882,15 +939,14 @@ function messageForConnection(connection: HostConnection, message: PeerMessage):
     if (
       !hostState ||
       hostState.status !== 'choice' ||
-      hostState.turnMode !== 'choose' ||
       connection.playerId !== message.playerId ||
-      hostState.players[hostState.currentPlayerIndex]?.id !== message.playerId ||
+      hostState.roundTurnRolls.some((turn) => turn.playerId === message.playerId) ||
       submitted.has(message.playerId)
     ) {
-      connection.channel.send(JSON.stringify({ type: 'error', message: 'A build roll cannot be started now.' }));
+      connection.channel.send(JSON.stringify({ type: 'error', message: 'This player has already chosen or is not in the active round.' }));
       return;
     }
-    hostState = beginBuildingTurn(hostState, rollTurnDie());
+    hostState = beginBuildingTurn(hostState, message.playerId, rollTurnDie());
     broadcastState();
     render();
     return;
@@ -900,17 +956,33 @@ function messageForConnection(connection: HostConnection, message: PeerMessage):
       !hostState ||
       hostState.status !== 'choice' ||
       connection.playerId !== message.playerId ||
-      submitted.has(message.playerId) ||
-      hostState.players[hostState.currentPlayerIndex]?.id !== message.playerId
+      submitted.has(message.playerId)
     ) {
-      connection.channel.send(JSON.stringify({ type: 'error', message: 'It is not your turn or your move was already submitted.' }));
+      connection.channel.send(JSON.stringify({ type: 'error', message: 'This move was already submitted or is not part of the active round.' }));
       return;
     }
     const player = hostState.players.find((item) => item.id === message.playerId);
-    if (!player || !isLegalAction(player, message.action, hostState.turnMode, hostState.turnDie)) {
+    let actionState = hostState;
+    let turn = actionState.roundTurnRolls.find((item) => item.playerId === message.playerId);
+    if (!turn && message.action.kind === 'bank') {
+      actionState = beginBankingTurn(actionState, message.playerId);
+      turn = actionState.roundTurnRolls.find((item) => item.playerId === message.playerId);
+    }
+    if (
+      !player ||
+      !turn ||
+      turn.choice !== message.action.kind ||
+      !isLegalAction(
+        player,
+        message.action,
+        turn.choice === 'build' ? 'build' : 'choose',
+        turn.die,
+      )
+    ) {
       connection.channel.send(JSON.stringify({ type: 'error', message: 'That action is not legal for the current turn.' }));
       return;
     }
+    hostState = actionState;
     submitted.set(message.playerId, message.action);
     broadcastState();
     maybeResolveRound();
@@ -974,49 +1046,66 @@ function broadcastState(): void {
 
 function submitBotActions(): void {
   if (!hostState || hostState.status !== 'choice') return;
-  const player = hostState.players[hostState.currentPlayerIndex];
-  if (!player?.isBot || hostState.turnMode !== 'choose' || submitted.has(player.id)) return;
-  const choice = chooseBotTurnChoice(player, hostState.targetPoints);
-  if (choice.kind === 'bank') {
-    submitted.set(player.id, choice);
-  } else {
-    hostState = beginBuildingTurn(hostState, rollTurnDie());
-    submitted.set(player.id, chooseBotBuildAction(player, hostState.turnDie!));
+  for (const player of hostState.players) {
+    if (
+      !player.isBot ||
+      submitted.has(player.id) ||
+      hostState.roundTurnRolls.some((turn) => turn.playerId === player.id)
+    ) continue;
+    const choice = chooseBotTurnChoice(player, hostState.targetPoints);
+    if (choice.kind === 'bank') {
+      hostState = beginBankingTurn(hostState, player.id);
+      submitted.set(player.id, choice);
+    } else {
+      const turnDie = rollTurnDie();
+      hostState = beginBuildingTurn(hostState, player.id, turnDie);
+      submitted.set(player.id, chooseBotBuildAction(player, turnDie));
+    }
   }
 }
 
 function maybeResolveRound(): void {
-  const activePlayer = hostState?.players[hostState.currentPlayerIndex];
-  if (!hostState || hostState.status !== 'choice' || !activePlayer || !submitted.has(activePlayer.id)) {
+  if (!hostState || hostState.status !== 'choice') {
     broadcastState();
     render();
     return;
   }
-  if (activePlayer.isBot) {
+  submittedCount = submitted.size;
+  const allSubmitted = hostState.players.every((player) =>
+    submitted.has(player.id) &&
+    hostState!.roundTurnRolls.some((turn) => turn.playerId === player.id));
+  if (!allSubmitted) {
     broadcastState();
     render();
-    if (botResolveTimer === null) {
-      botResolveTimer = window.setTimeout(() => {
-        botResolveTimer = null;
-        resolveSubmittedTurn();
-      }, BOT_TURN_DELAY_MS);
-    }
     return;
   }
-  resolveSubmittedTurn();
+  broadcastState();
+  render();
+  if (hostState.players.some((player) => player.isBot) && botResolveTimer === null) {
+    botResolveTimer = window.setTimeout(() => {
+      botResolveTimer = null;
+      resolveSubmittedRound();
+    }, BOT_TURN_DELAY_MS);
+    return;
+  }
+  if (botResolveTimer === null) resolveSubmittedRound();
 }
 
-function resolveSubmittedTurn(): void {
-  const activePlayer = hostState?.players[hostState.currentPlayerIndex];
-  if (!hostState || hostState.status !== 'choice' || !activePlayer || !submitted.has(activePlayer.id)) {
+function resolveSubmittedRound(): void {
+  if (
+    !hostState ||
+    hostState.status !== 'choice' ||
+    !hostState.players.every((player) => submitted.has(player.id))
+  ) {
     return;
   }
   try {
-    const alreadyTurned = new Set(hostState.roundTurnRolls.map((turn) => turn.playerId));
-    const windDice = hostState.players.every((player) => player.id === activePlayer.id || alreadyTurned.has(player.id))
-      ? rollDice()
-      : null;
-    hostState = resolveRound(hostState, submitted.get(activePlayer.id)!, windDice);
+    const actions = hostState.players.map((player) => {
+      const action = submitted.get(player.id);
+      if (!action) throw new Error(`${player.name} has not submitted a turn.`);
+      return { playerId: player.id, action };
+    });
+    hostState = resolveRound(hostState, actions, rollDice());
     submitted.clear();
     submittedCount = 0;
     selectedAllocations.clear();
@@ -1032,7 +1121,6 @@ function resolveSubmittedTurn(): void {
 
 function scheduleAutomaticNextRound(): void {
   if (autoRollTimer !== null) window.clearTimeout(autoRollTimer);
-  const delay = hostState?.dice === null ? NEXT_TURN_DELAY_MS : ROUND_WIND_DISPLAY_MS;
   autoRollTimer = window.setTimeout(() => {
     autoRollTimer = null;
     if (screen !== 'host' || !hostState || hostState.status !== 'resolution') return;
@@ -1045,7 +1133,7 @@ function scheduleAutomaticNextRound(): void {
     guestBuildRequested = false;
     submitBotActions();
     maybeResolveRound();
-  }, delay);
+  }, ROUND_WIND_DISPLAY_MS);
 }
 
 function chooseBuild(playerId: string): void {
@@ -1053,16 +1141,16 @@ function chooseBuild(playerId: string): void {
   if (
     !state ||
     state.status !== 'choice' ||
-    state.turnMode !== 'choose' ||
-    state.players[state.currentPlayerIndex]?.id !== playerId
+    state.roundTurnRolls.some((turn) => turn.playerId === playerId) ||
+    (screen === 'host' ? submitted.has(playerId) : guestSubmitted)
   ) {
-    showFailure('It is not time to choose building for this turn.');
+    showFailure('You have already chosen or are not in the active round.');
     return;
   }
   selectedTurnMode = 'build';
   selectedBankTowerId = null;
   if (screen === 'host') {
-    hostState = beginBuildingTurn(state, rollTurnDie());
+    hostState = beginBuildingTurn(state, playerId, rollTurnDie());
     broadcastState();
     render();
     return;
@@ -1077,24 +1165,33 @@ function chooseBuild(playerId: string): void {
 }
 
 function commitAction(playerId: string, action: PlayerAction): void {
-  const state = currentState();
+  let state = currentState();
   if (
     !state ||
     state.status !== 'choice' ||
-    state.players[state.currentPlayerIndex]?.id !== playerId ||
     (screen === 'host' && submitted.has(playerId)) ||
     guestSubmitted
   ) return;
+  let turn = state.roundTurnRolls.find((item) => item.playerId === playerId);
+  if (!turn && action.kind === 'bank' && selectedTurnMode === 'bank') {
+    state = beginBankingTurn(state, playerId);
+    turn = state.roundTurnRolls.find((item) => item.playerId === playerId);
+  }
   const player = state.players.find((item) => item.id === playerId);
-  if (!player || !isLegalAction(player, action, state.turnMode, state.turnDie)) {
+  if (
+    !player ||
+    !turn ||
+    turn.choice !== action.kind ||
+    !isLegalAction(player, action, turn.choice === 'build' ? 'build' : 'choose', turn.die)
+  ) {
     showFailure('That action is no longer available. Choose an eligible tower and try again.');
     return;
   }
-  submitted.set(playerId, action);
-  selectedAllocations.clear();
   selectedBankTowerId = null;
   selectedTurnMode = null;
   if (screen === 'host') {
+    hostState = state;
+    submitted.set(playerId, action);
     submittedCount = submitted.size;
     maybeResolveRound();
   } else {
@@ -1103,7 +1200,6 @@ function commitAction(playerId: string, action: PlayerAction): void {
       showFailure('The host connection is unavailable. Reconnect before submitting your turn.');
       return;
     }
-    selectedAllocations.clear();
     selectedBankTowerId = null;
     guestChannel?.send(JSON.stringify({ type: 'action', playerId, action }));
     guestSubmitted = true;
@@ -1258,15 +1354,15 @@ function connectGuest(roomCode: string, recovery?: GuestRecoveryRecord): void {
         if (message.type === 'state' && message.playerId === guestId) {
           guestConnecting = false;
           const previousRound = guestState?.round;
-          const previousTurnMode = guestState?.turnMode;
-          const previousPlayerIndex = guestState?.currentPlayerIndex;
+          const previousRoll = guestState?.roundTurnRolls.find((turn) => turn.playerId === guestId);
           guestState = message.state;
           submittedCount = message.submittedCount;
+          const currentRoll = guestState.roundTurnRolls.find((turn) => turn.playerId === guestId);
           if (
             guestState.status !== 'choice' ||
             guestState.round !== previousRound ||
-            guestState.turnMode !== previousTurnMode ||
-            guestState.currentPlayerIndex !== previousPlayerIndex
+            currentRoll?.choice !== previousRoll?.choice ||
+            currentRoll?.die !== previousRoll?.die
           ) {
             guestSubmitted = false;
             selectedAllocations.clear();
@@ -1377,22 +1473,9 @@ function removePlayer(playerId: string): void {
   const player = hostState.players.find((item) => item.id === playerId);
   if (!player) return;
   hostResumeTokens.delete(playerId);
-  const removedIndex = hostState.players.findIndex((item) => item.id === playerId);
-  const wasActive = hostState.status === 'choice' && removedIndex === hostState.currentPlayerIndex;
   hostState.players = hostState.players.filter((item) => item.id !== playerId);
-  if (removedIndex < hostState.currentPlayerIndex) hostState.currentPlayerIndex -= 1;
-  if (hostState.currentPlayerIndex >= hostState.players.length) hostState.currentPlayerIndex = 0;
+  hostState.roundTurnRolls = hostState.roundTurnRolls.filter((turn) => turn.playerId !== playerId);
   submitted.delete(playerId);
-  if (wasActive && hostState.status === 'choice' && hostState.players.length > 0) {
-    hostState.turnDie = null;
-    hostState.turnMode = 'choose';
-  }
-  if (wasActive) {
-    selectedAllocations.clear();
-    selectedBankTowerId = null;
-    selectedTurnMode = null;
-    guestBuildRequested = false;
-  }
   for (const connection of hostConnections) {
     if (connection.playerId === playerId) {
       hostConnections.delete(connection);
@@ -1555,7 +1638,9 @@ app.addEventListener('click', async (event) => {
       selectedAllocations.clear();
       render();
     } else if (action === 'undo-floor' && button.dataset.slot) {
-      if (currentState()?.turnMode !== 'build') return;
+      const state = currentState();
+      const playerId = screen === 'host' ? hostId : guestId;
+      if (state?.roundTurnRolls.find((turn) => turn.playerId === playerId)?.choice !== 'build') return;
       const key = button.dataset.slot;
       const selectedAmount = selectedAllocations.get(key) ?? 0;
       if (selectedAmount === 0) return;
@@ -1566,27 +1651,27 @@ app.addEventListener('click', async (event) => {
       const key = button.dataset.slot;
       if (selectedTurnMode === 'bank') {
         selectedBankTowerId = key;
-      } else if (currentState()?.turnMode === 'build') {
+      } else {
         const state = currentState();
         const playerId = screen === 'host' ? hostId : guestId;
+        const turn = state?.roundTurnRolls.find((item) => item.playerId === playerId);
         const player = state?.players.find((item) => item.id === playerId);
-        const turnDie = state?.turnDie ?? 0;
+        const turnDie = turn?.choice === 'build' ? turn.die : 0;
         const spent = Array.from(selectedAllocations.values()).reduce((sum, value) => sum + value, 0);
         const selectedAmount = selectedAllocations.get(key) ?? 0;
-        if (!player || spent >= turnDie) return;
+        if (turn?.choice !== 'build' || !player || spent >= turnDie) return;
         if (key.startsWith('new-') && selectedAmount === 0) {
           const pendingCount = Array.from(selectedAllocations.keys()).filter((item) => item.startsWith('new-')).length;
           if (pendingCount > 0 || player.towers.length >= MAX_TOWERS) return;
         }
         selectedAllocations.set(key, selectedAmount + 1);
-      } else {
-        return;
       }
       render();
     } else if (action === 'commit-move') {
       const playerId = screen === 'host' ? hostId : guestId;
       const state = currentState();
-      if (state?.turnMode === 'build') {
+      const turn = state?.roundTurnRolls.find((item) => item.playerId === playerId);
+      if (turn?.choice === 'build') {
         const placements = Array.from(selectedAllocations, ([towerId, elements]) => ({
           towerId: towerId.startsWith('new-') ? null : towerId,
           elements,
@@ -1661,7 +1746,7 @@ app.addEventListener('click', async (event) => {
       }
       render();
     } else if (action === 'rules') {
-      window.alert(`Players take turns. First choose to build or bank. Building rolls one die; click towers to add floors or a dotted slot to start one new tower in that position. Use the Undo one button to take a floor back; you can have up to ${MAX_TOWERS} standing towers. Banking scores one tower for 1 + 2 + … + height points and does not roll a die. After everyone has taken a turn, the shared two-die wind tests all standing towers. Every tower beyond your first adds +1 wind protection to all your towers, up to +3. First to the target wins.`);
+      window.alert(`Players choose and submit turns in parallel. Building rolls one die; add floors to existing towers or start one new tower in an empty slot. Each tower shows its bank value. Use Undo one to take a floor back; you can have up to ${MAX_TOWERS} standing towers. Banking scores one tower for 1 + 2 + … + height and does not roll a die. After everyone submits, the shared two-die wind tests all standing towers. Every tower beyond your first adds +1 wind protection to all your towers, up to +3. First to the target wins.`);
     }
   } catch (error) {
     showFailure(error instanceof Error ? error.message : 'That action could not be completed.');

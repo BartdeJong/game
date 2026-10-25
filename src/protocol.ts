@@ -1,4 +1,5 @@
 import {
+  MAX_PLAYERS,
   MAX_TOWERS,
   MAX_WIN_POINTS,
   MIN_WIN_POINTS,
@@ -108,55 +109,66 @@ function isMatchState(value: unknown): value is MatchState {
     value.targetPoints > MAX_WIN_POINTS ||
     !('players' in value) ||
     !Array.isArray(value.players) ||
+    value.players.length > MAX_PLAYERS ||
     !('history' in value) ||
     !Array.isArray(value.history) ||
     !('winnerIds' in value) ||
     !Array.isArray(value.winnerIds) ||
     !('nextTowerId' in value) ||
     typeof value.nextTowerId !== 'number' ||
-    !('currentPlayerIndex' in value) ||
-    typeof value.currentPlayerIndex !== 'number' ||
-    !Number.isInteger(value.currentPlayerIndex) ||
     !('roundTurnRolls' in value) ||
     !Array.isArray(value.roundTurnRolls) ||
     !('roundActions' in value) ||
     !Array.isArray(value.roundActions) ||
     !('roundBanked' in value) ||
     !Array.isArray(value.roundBanked) ||
-    !('turnDie' in value) ||
-    (value.turnDie !== null &&
-      (typeof value.turnDie !== 'number' ||
-        !Number.isInteger(value.turnDie) ||
-        value.turnDie < 1 ||
-        value.turnDie > 6)) ||
-    !('turnMode' in value) ||
-    (value.turnMode !== null && value.turnMode !== 'choose' && value.turnMode !== 'build') ||
     !('dice' in value)
   ) {
     return false;
   }
+  const players = value.players;
+  const roundTurnRolls = value.roundTurnRolls;
+  if (!Array.isArray(players) || !Array.isArray(roundTurnRolls)) return false;
   if (
     !value.history.every((round) => isRoundHistoryEntry(round)) ||
-    value.players.some((player) => !isPlayerState(player)) ||
-    value.currentPlayerIndex < 0 ||
-    (value.players.length > 0 && value.currentPlayerIndex >= value.players.length)
+    players.some((player: unknown) => !isPlayerState(player)) ||
+    !roundTurnRolls.every(isRoundTurnRoll) ||
+    new Set(roundTurnRolls.map((turn) => turn.playerId)).size !== roundTurnRolls.length ||
+    roundTurnRolls.some((turn) => !players.some((player: unknown) =>
+      hasPlayerId(player, turn.playerId)))
   ) {
     return false;
   }
-  if (value.status === 'lobby') return value.dice === null && value.turnDie === null && value.turnMode === null;
-  if (value.status === 'choice') {
-    return value.dice === null &&
-      ((value.turnMode === 'choose' && value.turnDie === null) ||
-        (value.turnMode === 'build' && value.turnDie !== null));
-  }
-  if (value.status === 'resolution' && value.dice === null) {
-    return value.turnDie === null && value.turnMode === null;
-  }
-  return value.turnDie === null &&
-    value.turnMode === null &&
-    Array.isArray(value.dice) &&
+  if (value.status === 'lobby') return value.dice === null && roundTurnRolls.length === 0;
+  if (value.status === 'choice') return value.dice === null;
+  if (roundTurnRolls.length !== players.length) return false;
+  return Array.isArray(value.dice) &&
     value.dice.length === 2 &&
     value.dice.every((die) => typeof die === 'number' && Number.isInteger(die) && die >= 1 && die <= 6);
+}
+
+function hasPlayerId(value: unknown, playerId: string): boolean {
+  return typeof value === 'object' &&
+    value !== null &&
+    'id' in value &&
+    value.id === playerId;
+}
+
+function isRoundTurnRoll(value: unknown): value is MatchState['roundTurnRolls'][number] {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('playerId' in value) ||
+    typeof value.playerId !== 'string' ||
+    !('choice' in value) ||
+    !('die' in value)
+  ) return false;
+  if (value.choice === 'bank') return value.die === null;
+  return value.choice === 'build' &&
+    typeof value.die === 'number' &&
+    Number.isInteger(value.die) &&
+    value.die >= 1 &&
+    value.die <= 6;
 }
 
 function isPlayerState(value: unknown): boolean {
@@ -203,9 +215,25 @@ function isRoundHistoryEntry(value: unknown): boolean {
     !Array.isArray(value.toppled)
   ) return false;
   const counts = value.fallenCounts;
-  return typeof counts === 'object' &&
+  const scoreChanges = 'pointsEarned' in value ? value.pointsEarned : undefined;
+  return (scoreChanges === undefined ||
+      (Array.isArray(scoreChanges) &&
+        scoreChanges.every(isScoreChange) &&
+        new Set(scoreChanges.map((scoreChange) => scoreChange.playerId)).size === scoreChanges.length)) &&
+    typeof counts === 'object' &&
     counts !== null &&
     !Array.isArray(counts) &&
     Object.values(counts).every((count) =>
       typeof count === 'number' && Number.isInteger(count) && count >= 0);
+}
+
+function isScoreChange(value: unknown): value is { playerId: string; points: number } {
+  return typeof value === 'object' &&
+    value !== null &&
+    'playerId' in value &&
+    typeof value.playerId === 'string' &&
+    'points' in value &&
+    typeof value.points === 'number' &&
+    Number.isInteger(value.points) &&
+    value.points >= 0;
 }

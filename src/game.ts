@@ -1,4 +1,4 @@
-export const MAX_PLAYERS = 5;
+export const MAX_PLAYERS = 10;
 export const MAX_TOWERS = 6;
 export const MIN_PLAYERS = 2;
 export const DEFAULT_WIN_POINTS = 80;
@@ -38,14 +38,19 @@ export interface RoundAction {
   description: string;
 }
 
+export type RoundTurnRoll =
+  | { playerId: string; choice: 'build'; die: number }
+  | { playerId: string; choice: 'bank'; die: null };
+
 export interface RoundResolution {
   round: number;
-  turnRolls: { playerId: string; choice: 'build' | 'bank'; die: number | null }[];
+  turnRolls: RoundTurnRoll[];
   dice: [number, number];
   wind: number;
   fallenCounts: Record<string, number>;
   actions: RoundAction[];
   banked: { playerId: string; towerHeight: number; points: number }[];
+  pointsEarned?: { playerId: string; points: number }[];
   toppled: { playerId: string; towerId: string; height: number; limit: number }[];
 }
 
@@ -54,10 +59,7 @@ export interface MatchState {
   round: number;
   targetPoints: number;
   dice: [number, number] | null;
-  turnDie: number | null;
-  turnMode: 'choose' | 'build' | null;
-  currentPlayerIndex: number;
-  roundTurnRolls: { playerId: string; choice: 'build' | 'bank'; die: number | null }[];
+  roundTurnRolls: RoundTurnRoll[];
   roundActions: RoundAction[];
   roundBanked: { playerId: string; towerHeight: number; points: number }[];
   players: Player[];
@@ -73,9 +75,6 @@ export function createMatch(host: Player, targetPoints = DEFAULT_WIN_POINTS): Ma
     round: 0,
     targetPoints,
     dice: null,
-    turnDie: null,
-    turnMode: null,
-    currentPlayerIndex: 0,
     roundTurnRolls: [],
     roundActions: [],
     roundBanked: [],
@@ -166,7 +165,7 @@ export function isLegalAction(
 
 export function beginGame(state: MatchState): MatchState {
   if (state.status !== 'lobby' || state.players.length < MIN_PLAYERS || state.players.length > MAX_PLAYERS) {
-    throw new Error('The room needs 2–5 players before the game can start.');
+    throw new Error(`The room needs ${MIN_PLAYERS}–${MAX_PLAYERS} players before the game can start.`);
   }
   validateTargetPoints(state.targetPoints);
   return {
@@ -174,9 +173,6 @@ export function beginGame(state: MatchState): MatchState {
     status: 'choice',
     round: 1,
     dice: null,
-    turnDie: null,
-    turnMode: 'choose',
-    currentPlayerIndex: 0,
     roundTurnRolls: [],
     roundActions: [],
     roundBanked: [],
@@ -189,12 +185,31 @@ export function beginGame(state: MatchState): MatchState {
   };
 }
 
-export function beginBuildingTurn(state: MatchState, turnDie: number): MatchState {
-  if (state.status !== 'choice' || state.turnMode !== 'choose' || state.turnDie !== null) {
-    throw new Error('Choose building before rolling the die.');
-  }
+export function beginBuildingTurn(state: MatchState, playerId: string, turnDie: number): MatchState {
+  if (
+    state.status !== 'choice' ||
+    state.dice !== null ||
+    !state.players.some((player) => player.id === playerId) ||
+    state.roundTurnRolls.some((turn) => turn.playerId === playerId)
+  ) throw new Error('This player has already chosen or is not in the active round.');
   validateDie(turnDie);
-  return { ...state, turnMode: 'build', turnDie };
+  return {
+    ...state,
+    roundTurnRolls: [...state.roundTurnRolls, { playerId, choice: 'build', die: turnDie }],
+  };
+}
+
+export function beginBankingTurn(state: MatchState, playerId: string): MatchState {
+  if (
+    state.status !== 'choice' ||
+    state.dice !== null ||
+    !state.players.some((player) => player.id === playerId) ||
+    state.roundTurnRolls.some((turn) => turn.playerId === playerId)
+  ) throw new Error('This player has already chosen or is not in the active round.');
+  return {
+    ...state,
+    roundTurnRolls: [...state.roundTurnRolls, { playerId, choice: 'bank', die: null }],
+  };
 }
 
 export function returnToLobby(state: MatchState): MatchState {
@@ -206,9 +221,6 @@ export function returnToLobby(state: MatchState): MatchState {
     status: 'lobby',
     round: 0,
     dice: null,
-    turnDie: null,
-    turnMode: null,
-    currentPlayerIndex: 0,
     roundTurnRolls: [],
     roundActions: [],
     roundBanked: [],
@@ -235,9 +247,6 @@ export function beginRematch(state: MatchState): MatchState {
     status: 'choice',
     round: 1,
     dice: null,
-    turnDie: null,
-    turnMode: 'choose',
-    currentPlayerIndex: 0,
     roundTurnRolls: [],
     roundActions: [],
     roundBanked: [],
@@ -259,20 +268,16 @@ function resetGamePlayers(players: Player[]): Player[] {
 
 export function beginNextRound(state: MatchState): MatchState {
   if (state.status !== 'resolution') {
-    throw new Error('The next turn can only start after the previous turn resolves.');
+    throw new Error('The next round can only start after the shared wind resolves.');
   }
-  const windResolved = state.dice !== null;
   return {
     ...state,
     status: 'choice',
-    round: windResolved ? state.round + 1 : state.round,
+    round: state.round + 1,
     dice: null,
-    turnDie: null,
-    turnMode: 'choose',
-    currentPlayerIndex: windResolved ? 0 : (state.currentPlayerIndex + 1) % state.players.length,
-    roundTurnRolls: windResolved ? [] : state.roundTurnRolls,
-    roundActions: windResolved ? [] : state.roundActions,
-    roundBanked: windResolved ? [] : state.roundBanked,
+    roundTurnRolls: [],
+    roundActions: [],
+    roundBanked: [],
   };
 }
 
@@ -296,110 +301,101 @@ export function createPlayerView(state: MatchState, playerId: string): MatchStat
 
 export function resolveRound(
   state: MatchState,
-  action: PlayerAction,
-  dice: [number, number] | null,
+  actions: { playerId: string; action: PlayerAction }[],
+  dice: [number, number],
 ): MatchState {
-  if (state.status !== 'choice' || state.dice !== null || state.turnMode === null) {
-    throw new Error('There is no active turn to resolve.');
+  if (state.status !== 'choice' || state.dice !== null) {
+    throw new Error('There is no active round to resolve.');
   }
-  const player = state.players[state.currentPlayerIndex];
-  if (!player || !isLegalAction(player, action, state.turnMode, state.turnDie)) {
-    throw new Error(`Invalid turn for ${player?.name ?? 'the active player'}.`);
-  }
-  const actedPlayerIds = new Set(state.roundTurnRolls.map((turn) => turn.playerId));
+  const turnsByPlayer = new Map(state.roundTurnRolls.map((turn) => [turn.playerId, turn]));
+  const actionsByPlayer = new Map<string, PlayerAction>();
   if (
-    actedPlayerIds.size !== state.roundTurnRolls.length ||
-    actedPlayerIds.has(player.id) ||
-    state.players.find((item) => !actedPlayerIds.has(item.id))?.id !== player.id
+    turnsByPlayer.size !== state.roundTurnRolls.length ||
+    turnsByPlayer.size !== state.players.length ||
+    actions.length !== state.players.length
   ) {
-    throw new Error('Players must take one turn each, in order, before the wind is rolled.');
+    throw new Error('Every player must choose and submit one action before the shared wind is rolled.');
   }
-  const finalPlayerTurn = state.players.every((item) => item.id === player.id || actedPlayerIds.has(item.id));
-  if (finalPlayerTurn !== (dice !== null)) {
-    throw new Error(finalPlayerTurn
-      ? 'The shared wind must be rolled after every player has taken a turn.'
-      : 'The shared wind cannot be rolled until every player has taken a turn.');
+  for (const turn of state.roundTurnRolls) {
+    if (!state.players.some((player) => player.id === turn.playerId)) {
+      throw new Error('A turn belongs to a player who is not in this round.');
+    }
   }
-  if (dice) validateDice(dice);
+  for (const entry of actions) {
+    if (!state.players.some((player) => player.id === entry.playerId) || actionsByPlayer.has(entry.playerId)) {
+      throw new Error('Each player can submit only one action per round.');
+    }
+    actionsByPlayer.set(entry.playerId, entry.action);
+  }
+  for (const player of state.players) {
+    const turn = turnsByPlayer.get(player.id);
+    const action = actionsByPlayer.get(player.id);
+    if (!turn || !action || turn.choice !== action.kind) {
+      throw new Error(`A valid ${player.name} action is required before the wind is rolled.`);
+    }
+    const turnMode = turn.choice === 'build' ? 'build' : 'choose';
+    if (!isLegalAction(player, action, turnMode, turn.die)) {
+      throw new Error(`Invalid turn for ${player.name}.`);
+    }
+  }
+  validateDice(dice);
 
   const players = state.players.map((item) => ({
     ...item,
     towers: item.towers.map((tower) => ({ ...tower })),
   }));
-  const activePlayer = players[state.currentPlayerIndex]!;
   let nextTowerId = state.nextTowerId;
-  const roundTurnRolls = [...state.roundTurnRolls, {
-    playerId: activePlayer.id,
-    choice: action.kind,
-    die: action.kind === 'build' ? state.turnDie : null,
-  }];
-  const roundActions = [...state.roundActions];
+  const roundTurnRolls = [...state.roundTurnRolls];
+  const roundActions: RoundAction[] = [];
   const roundBanked = [...state.roundBanked];
-  let bankedEntry: { playerId: string; towerHeight: number; points: number } | null = null;
-  if (action.kind === 'bank') {
-    const index = activePlayer.towers.findIndex((tower) => tower.id === action.towerId);
-    const [tower] = activePlayer.towers.splice(index, 1);
-    const points = towerPoints(tower!.height);
-    activePlayer.score += points;
-    activePlayer.bankedTowers += 1;
-    bankedEntry = { playerId: activePlayer.id, towerHeight: tower!.height, points };
-    roundBanked.push(bankedEntry);
-  }
-
-  let placedElements = 0;
-  if (action.kind === 'build') {
-    for (const placement of action.placements) {
-      placedElements += placement.elements;
-      if (placement.towerId === null) {
-        const id = `tower-${nextTowerId++}`;
-        const occupiedSlots = new Set(activePlayer.towers.map((tower) => tower.slot));
-        const slot = placement.slot ?? firstAvailableTowerSlot(occupiedSlots);
-        if (slot === null) throw new Error('There are no open tower slots.');
-        activePlayer.towers.push({ id, height: placement.elements, slot });
-      } else {
-        const tower = activePlayer.towers.find((item) => item.id === placement.towerId)!;
-        tower.height += placement.elements;
+  for (const player of players) {
+    const action = actionsByPlayer.get(player.id)!;
+    let placedElements = 0;
+    const descriptions: string[] = [];
+    if (action.kind === 'bank') {
+      const index = player.towers.findIndex((tower) => tower.id === action.towerId);
+      const [tower] = player.towers.splice(index, 1);
+      const points = towerPoints(tower!.height);
+      player.score += points;
+      player.bankedTowers += 1;
+      roundBanked.push({ playerId: player.id, towerHeight: tower!.height, points });
+      descriptions.push(`banked height ${tower!.height} (+${points})`);
+    } else {
+      for (const placement of action.placements) {
+        placedElements += placement.elements;
+        if (placement.towerId === null) {
+          const id = `tower-${nextTowerId++}`;
+          const occupiedSlots = new Set(player.towers.map((tower) => tower.slot));
+          const slot = placement.slot ?? firstAvailableTowerSlot(occupiedSlots);
+          if (slot === null) throw new Error('There are no open tower slots.');
+          player.towers.push({ id, height: placement.elements, slot });
+        } else {
+          const tower = player.towers.find((item) => item.id === placement.towerId)!;
+          tower.height += placement.elements;
+        }
+      }
+      if (placedElements > 0) {
+        descriptions.push(`added ${placedElements} floor${placedElements === 1 ? '' : 's'}`);
       }
     }
+    roundActions.push({ playerId: player.id, description: descriptions.join(' and ') || 'passed' });
   }
 
-  const descriptions: string[] = [];
-  if (placedElements > 0) {
-    descriptions.push(`added ${placedElements} floor${placedElements === 1 ? '' : 's'}`);
-  }
-  if (action.kind === 'bank' && bankedEntry) {
-    descriptions.push(`banked height ${bankedEntry.towerHeight} (+${bankedEntry.points})`);
-  }
-  roundActions.push({
-    playerId: activePlayer.id,
-    description: descriptions.join(' and ') || 'passed',
-  });
-
-  if (!finalPlayerTurn) {
-    return {
-      ...state,
-      dice: null,
-      turnDie: null,
-      turnMode: null,
-      status: 'resolution',
-      players,
-      roundTurnRolls,
-      roundActions,
-      roundBanked,
-      nextTowerId,
-    };
-  }
-
-  const windDice = dice!;
-  const wind = windDice[0] + windDice[1];
+  const wind = dice[0] + dice[1];
   const resolution: RoundResolution = {
     round: state.round,
     turnRolls: roundTurnRolls,
-    dice: [...windDice],
+    dice: [...dice],
     wind,
     fallenCounts: Object.fromEntries(players.map((item) => [item.id, 0])),
     actions: roundActions,
     banked: roundBanked,
+    pointsEarned: players.map((player) => ({
+      playerId: player.id,
+      points: roundBanked
+        .filter((banked) => banked.playerId === player.id)
+        .reduce((total, banked) => total + banked.points, 0),
+    })),
     toppled: [],
   };
 
@@ -431,11 +427,11 @@ export function resolveRound(
 
   return {
     ...state,
-    dice: [...windDice],
-    turnDie: null,
-    turnMode: null,
+    dice: [...dice],
     status: gameEnded ? 'finished' : 'resolution',
     players,
+    roundActions,
+    roundBanked,
     history: [...state.history, resolution],
     winnerIds,
     nextTowerId,

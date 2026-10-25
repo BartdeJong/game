@@ -6,14 +6,14 @@
 
 ## 1. Project Overview
 
-Build Skyline Dice as a minimal, mobile-friendly TypeScript browser game for 2–5 players, including iPhone browsers, with nothing to install. The static app is published free on GitHub Pages. For a live match, the host's browser is authoritative and connects directly to each guest browser using a separate WebRTC data channel. Guests join by entering one short room code. The host is also a player.
+Build Skyline Dice as a minimal, mobile-friendly TypeScript browser game for 2–10 players, including iPhone browsers, with nothing to install. The static app is published free on GitHub Pages. For a live match, the host's browser is authoritative and connects directly to each guest browser using a separate WebRTC data channel. Guests join by entering one short room code. The host is also a player.
 
 No accounts, application-owned database, persistent preferences, or match history are in scope. PeerJS Cloud provides temporary signaling only; active match state exists only in the host browser's memory.
 
 ## 2. Goals and Scope
 
 - Implement the approved MVP rules and defaults in section 4.
-- Let a host create a 2–5 player room and play alongside guests, with no extra app or software installed.
+- Let a host create a 2–10 player room and play alongside guests, with no extra app or software installed.
 - Let the host add and remove automatic robot players in the lobby, enabling solo play and filling open seats.
 - Let the host set a points-to-win target before each game, automatically roll the next round after a short results pause, and retain room win totals across rematches.
 - Provide an easy lobby, shared round roll, simultaneous choices, resolution feedback, score display, and final result.
@@ -32,11 +32,11 @@ Out of scope: accounts, an application-owned signaling backend, online matchmaki
 1. Host and guests open the GitHub Pages app in their browsers. The host creates a room and enters a display name.
 2. The host reserves an eight-character PeerJS ID and shares it as the room code. If the ID is already in use, the app generates another.
 3. Each guest enters the code and their name. PeerJS Cloud brokers the WebRTC setup; gameplay then uses a direct data channel where the network permits. Repeat by sharing the same code with each guest.
-4. Once 2–5 human and robot players, including the host, are present, the host can start. Human players commit one private choice per round; robot choices are submitted automatically. The host reveals choices together only after all players have submitted, then sends each guest a personalized state that hides opponents' towers and detailed actions.
+4. Once 2–10 human and robot players, including the host, are present, the host can start. Human players choose turns independently; the shared bar shows each choice and build die as it is made. Per-round scores are shared after the wind, while opponents' towers and detailed placements remain private.
 
 The room code is an invite and should only be shared with intended players. The PeerJS Cloud service handles peer discovery and signaling but does not receive game messages after direct connection setup. No camera permission or manual offer/answer exchange is required. The free shared service may be rate-limited or unavailable; it is not guaranteed for production. The app configures STUN but no TURN relay, so restrictive NAT/firewall networks can still prevent peers from connecting.
 
-**Round flow**: collect simultaneous hidden human choices and automatic robot choices → roll and share the round's 2d6 wind result → apply valid build/bank actions → topple exposed towers according to the wind table → publish scores and per-player fall counts without revealing opponents' towers or detailed actions → automatically begin the next round after a 3-second results pause unless a player has reached the room's points target.
+**Round flow**: collect simultaneous human and automatic robot actions → roll and share the round's 2d6 wind result → apply valid build/bank actions → topple exposed towers according to the wind table → publish scores and per-player fall counts without revealing opponents' towers or detailed placements → automatically begin the next round after an 8-second results pause unless a player has reached the room's points target.
 
 **Connectivity and lifecycle constraints**: Room setup requires internet access to reach PeerJS Cloud. WebRTC direct connectivity depends on the iOS browser, Wi-Fi/network policy, and ICE behavior; same-Wi-Fi access alone does not guarantee peer connectivity (for example, client isolation or browser restrictions can prevent it). This must be verified on real iPhones before implementation is considered viable. The shared PeerJS service's uptime, rate limits, and room-ID availability are outside the app's control. A disconnected guest's seat/state remains only in host memory and the round may pause while the host removes them; exact recovery behavior is a validation item. There is no host migration. If the host closes the page, the host browser is backgrounded or suspended, or the device/browser loses the active page, the match may be interrupted or lost. Active state is not persisted or recoverable from another device.
 
@@ -58,14 +58,14 @@ The room code is an invite and should only be shared with intended players. The 
 | Wind strength | Sum of the two dice, from 2–12. |
 | Toppling test | An unbanked tower topples when wind strength is greater than or equal to its height's limit. |
 | Height → wind limit | Height 1: 12; 2: 11; 3: 10; 4: 9; 5: 8; 6: 7; 7 or higher: 6. |
-| Roll/choice timing | Players privately commit simultaneously before the shared roll; the host rolls and shares it after all choices are locked. |
+| Roll/choice timing | Players choose turns independently; the shared bar shows each choice and build die, and the host rolls wind after all actions are locked. |
 | Build exposure | Apply the chosen build before the toppling test; a newly started or extended tower is exposed to that round's wind. |
 | Banking | A bank action secures one existing tower before wind resolution and scores `height × (height + 1) / 2`; no other action is taken by that player that round. |
 | Final round | End after resolving the round in which any player reaches or exceeds the host-configured target. |
 | Winner/ties | Highest score wins; equal high scores share the victory, with each tied winner receiving one room win. |
-| Room start | Host can start with 2–5 players, including robots; all human players must be connected. |
+| Room start | Host can start with 2–10 players, including robots; all human players must be connected. |
 | Win target | Host sets 10–200 points before a game; default is 80. |
-| Automatic next roll | Start the next round automatically 3 seconds after showing the result. |
+| Automatic next roll | Start the next round automatically 8 seconds after showing the result. |
 | Room win tally | Increment each winner's room win count; tied winners each receive one win. Preserve totals through rematches in the same room. |
 
 These approved limits and timing choices materially affect risk and strategy; surface them in the game rules/help panel.
@@ -90,8 +90,8 @@ These approved limits and timing choices materially affect risk and strategy; su
 
 **Screens and key interactions**:
 - **Host / Join**: room creation and host name entry; a readable eight-character invite code and copy action; guest name and room-code form; connection status. Explain that room codes should be shared privately, signaling requires internet, and direct connectivity can fail on restrictive networks.
-- **Lobby**: player list, host indicator, capacity status, connection status, and host-only start control enabled at 2–5 players.
-- **Game board**: player score/banked count, distinct tower cards with height and current wind limit, shared dice result, round status, and action controls for build, new tower, or bank. Choices remain private until all active players submit; show a waiting state and allow a player to revise only before submission.
+- **Lobby**: player list, host indicator, capacity status, connection status, and host-only start control enabled at 2–10 players.
+- **Game board**: player score/banked count, distinct tower cards with height and current wind limit, shared dice result, round status, and action controls for build, new tower, or bank. Show each player's roll and per-round score in the shared bar, keep opponent tower layouts and detailed placements private, show a waiting state, and allow a player to revise only before submission.
 - **Resolution**: reveal simultaneous choices, tower collapses/banking, points gained, and updated scores; explain why each tower toppled.
 - **Results**: winner or shared tie, final scores, and host option to start a fresh room (no history retained).
 
@@ -109,7 +109,7 @@ Use responsive layouts and keyboard-accessible controls, labels, focus states, a
 
 ## 8. Acceptance Criteria and Tests
 
-- A room supports 2–5 players, including the host; a sixth player is rejected with a clear message.
+- A room supports 2–10 players, including the host; an eleventh player is rejected with a clear message.
 - A host can share one short room code that each guest enters to connect, without manual offer/answer exchange.
 - An iPhone Safari host and iPhone Safari guest can establish a direct same-Wi-Fi WebRTC data channel on real devices; this is a go/no-go feasibility criterion.
 - All clients show the same host-generated 2d6 result and resolved state.
