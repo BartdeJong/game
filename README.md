@@ -17,10 +17,10 @@ The host browser generates the shared dice, validates actions, and owns the live
 ## Rules
 
 - Players act in parallel. Each player chooses building or banking; a build choice rolls one six-sided die, while banking rolls no die. Build floors across existing towers or start at most one new tower, up to the die result. Use **Undo one** to take a floor back. Up to six towers can stand. Each tower displays its bank value, `height × (height + 1) / 2`.
-- The shared wind dice roll after all players submit their actions. Banking scores and protects the selected tower. Everyone sees each player's roll, cumulative score, and points earned that round in the bar below their own skyline. Wind results stay visible for 8 seconds before the next round.
-- Every unbanked tower is exposed to the shared wind once per round. It topples if the wind reaches its limit.
-- Height limits are: 1 → 12, 2 → 11, 3 → 10, 4 → 9, 5 → 8, 6 → 7, and 7+ → 6.
-- Every tower beyond the first shields the whole skyline by +1 wind strength, up to +3. The protection applies to all standing towers on each wind check.
+- After all players submit, their build and bank actions are applied and bank points are awarded. Banking scores and removes the selected tower from the standing skyline before wind protection is calculated.
+- If any player reaches the target after bank points are awarded, the game ends immediately and no towers topple that round. Otherwise, calculate protection from the towers still standing, then check all standing towers against the shared wind together.
+- Each standing tower beyond the first adds +1 to the wind limit of every standing tower, up to +3. Banked towers have already been removed, so they do not contribute protection. This protection is calculated once and stays fixed for the whole wind check.
+- A tower topples when the total of the two wind dice is equal to or greater than its base limit plus protection. Base limits are: height 1 → 12, 2 → 11, 3 → 10, 4 → 9, 5 → 8, 6 → 7, 7 → 6, 8 → 5, 9 → 4, 10 → 3, and 11 or higher → 2.
 - The host sets a room target from 10 to 200 points (default 80). The first player to reach the target wins and earns one room win.
 
 New and extended towers are exposed to the shared wind at the end of each complete round. Players see their own towers and every player's score; opponents' towers and detailed moves stay hidden. A player's own submitted growth remains visible while others finish their turns. When towers topple, every player's screen shows the same wind result and a falling-tower animation. Robots use the same build-or-bank choice as people. Room win totals remain with the players when the host starts another game in the same room.

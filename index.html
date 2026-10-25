@@ -8,7 +8,9 @@
     <title>Skyline Dice</title>
   </head>
   <body>
-    <main id="app" class="app-shell" aria-live="polite"></main>
+    <main id="app" class="app-shell"></main>
+    <div id="screen-reader-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="screen-reader-alert" class="sr-only" role="alert" aria-atomic="true"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

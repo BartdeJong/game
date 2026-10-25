@@ -58,6 +58,14 @@ type Screen = 'home' | 'host' | 'guest-setup' | 'guest';
 
 const app = document.querySelector<HTMLElement>('#app');
 if (!app) throw new Error('The game page is missing its app container.');
+const screenReaderStatus = requireScreenReaderRegion('#screen-reader-status');
+const screenReaderAlert = requireScreenReaderRegion('#screen-reader-alert');
+
+function requireScreenReaderRegion(selector: string): HTMLElement {
+  const region = document.querySelector<HTMLElement>(selector);
+  if (!region) throw new Error(`The screen reader announcement region ${selector} is missing.`);
+  return region;
+}
 
 const HOST_RECOVERY_KEY = 'skyline-dice.host-recovery.v1';
 const GUEST_RECOVERY_KEY = 'skyline-dice.guest-recovery.v1';
@@ -95,6 +103,10 @@ let guestRecoveryAvailable: GuestRecoveryRecord | null = null;
 let recoveryReadError = false;
 let notice = '';
 let failure = '';
+let lastAnnouncedNotice = '';
+let lastAnnouncedFailure = '';
+let lastAnnouncedTurn = '';
+let lastAnnouncedOutcome = '';
 let notificationTimer: number | null = null;
 let trackedNotification = '';
 let autoRollTimer: number | null = null;
@@ -389,8 +401,8 @@ function showFailure(message: string): void {
 }
 
 function noticeMarkup(): string {
-  if (failure) return `<div class="notice notice-error" role="alert"><span>${escapeHtml(failure)}</span><button class="notice-dismiss" data-action="dismiss-notice" type="button" aria-label="Dismiss notification">×</button></div>`;
-  if (notice) return `<div class="notice" role="status"><span>${escapeHtml(notice)}</span><button class="notice-dismiss" data-action="dismiss-notice" type="button" aria-label="Dismiss notification">×</button></div>`;
+  if (failure) return `<div class="notice notice-error"><span>${escapeHtml(failure)}</span><button class="notice-dismiss" data-action="dismiss-notice" type="button" aria-label="Dismiss notification">×</button></div>`;
+  if (notice) return `<div class="notice"><span>${escapeHtml(notice)}</span><button class="notice-dismiss" data-action="dismiss-notice" type="button" aria-label="Dismiss notification">×</button></div>`;
   return '';
 }
 
@@ -455,7 +467,83 @@ function render(): void {
   app.innerHTML = `${headerMarkup()}${noticeMarkup()}${body}${footerMarkup()}`;
   document.documentElement.lang = language;
   localizeApp(app, language);
+  syncScreenReaderAnnouncements();
   syncNotificationTimer();
+}
+
+function syncScreenReaderAnnouncements(): void {
+  const alertMessage = failure ? localizeText(failure, language) : '';
+  if (alertMessage !== lastAnnouncedFailure) {
+    screenReaderAlert.textContent = alertMessage;
+    lastAnnouncedFailure = alertMessage;
+  }
+
+  const state = screen === 'host' ? hostState : screen === 'guest' ? guestState : null;
+  if (state?.status === 'resolution' || state?.status === 'finished') {
+    const latestRound = state.history.at(-1);
+    const outcomeKey = `${state.status}:${state.round}:${state.dice?.join(',') ?? ''}:${latestRound?.toppled.length ?? ''}:${state.winnerIds.join(',')}`;
+    lastAnnouncedTurn = '';
+    if (outcomeKey !== lastAnnouncedOutcome) {
+      lastAnnouncedOutcome = outcomeKey;
+      if (alertMessage) return;
+      if (state.status === 'resolution' && latestRound) {
+        const toppleMessage = latestRound.toppled.length
+          ? localizeText(`The wind toppled ${latestRound.toppled.length} tower${latestRound.toppled.length === 1 ? '' : 's'}!`, language)
+          : localizeText('No towers toppled this round.', language);
+        screenReaderStatus.textContent = [
+          localizeText(`ROUND ${state.round} COMPLETE`, language),
+          localizeText('The shared wind has passed.', language),
+          toppleMessage,
+        ].join(' ');
+      } else if (state.status === 'finished') {
+        const winners = state.players.filter((player) => state.winnerIds.includes(player.id));
+        const winnerMessage = winners.length > 1
+          ? localizeText('Shared victory!', language)
+          : localizeText(`${winners[0]?.name ?? 'A player'} wins!`, language);
+        screenReaderStatus.textContent = `${localizeText('GAME OVER', language)}. ${winnerMessage}`;
+      }
+      lastAnnouncedNotice = notice ? localizeText(notice, language) : '';
+    }
+    return;
+  }
+  lastAnnouncedOutcome = '';
+  const playerId = screen === 'host' ? hostId : guestId;
+  const ownTurn = state?.roundTurnRolls.find((turn) => turn.playerId === playerId);
+  const isSubmitted = screen === 'host' ? submitted.has(playerId) : guestSubmitted;
+  const turnKey = state?.status === 'choice'
+    ? `${state.round}:${ownTurn?.choice ?? selectedTurnMode ?? 'choose'}:${ownTurn?.die ?? ''}:${isSubmitted}:${selectedBankTowerId ? 'selected' : ''}:${guestBuildRequested}`
+    : '';
+
+  if (turnKey && turnKey !== lastAnnouncedTurn) {
+    lastAnnouncedTurn = turnKey;
+    if (alertMessage) return;
+    const message = isSubmitted
+      ? localizeText('Your move is locked in.', language)
+      : ownTurn?.choice === 'build'
+        ? `${localizeText('Build', language)}. ${localizeText(`${ownTurn.die} floors`, language)}.`
+        : ownTurn?.choice === 'bank' || selectedTurnMode === 'bank'
+          ? selectedBankTowerId
+            ? localizeText('Tower selected. Bank it to secure its points.', language)
+            : localizeText('Choose a tower to bank', language)
+          : guestBuildRequested
+            ? localizeText('Rolling the die…', language)
+            : `${localizeText('CHOOSE YOUR TURN', language)}. ${localizeText('Build or bank?', language)}`;
+    screenReaderStatus.textContent = message;
+    lastAnnouncedNotice = notice ? localizeText(notice, language) : '';
+    return;
+  }
+  if (!turnKey) lastAnnouncedTurn = '';
+
+  if (alertMessage) {
+    screenReaderStatus.textContent = '';
+    lastAnnouncedNotice = '';
+    return;
+  }
+  const noticeMessage = notice ? localizeText(notice, language) : '';
+  if (noticeMessage !== lastAnnouncedNotice) {
+    screenReaderStatus.textContent = noticeMessage;
+    lastAnnouncedNotice = noticeMessage;
+  }
 }
 
 function renderHome(): string {
@@ -651,7 +739,7 @@ function renderGame(state: MatchState, isHost: boolean): string {
       ? `<div class="wait-card"><span class="spinner" aria-hidden="true"></span><div><strong>Your move is locked in.</strong><p>Waiting for every player before the shared wind.</p></div></div>`
       : '';
   const toppleAnimation = state.dice !== null && latestRound?.toppled.length
-    ? `<div class="topple-animation" role="status" aria-live="polite">
+    ? `<div class="topple-animation">
         <span class="falling-tower" aria-hidden="true">▥</span>
         <strong>The wind toppled ${latestRound.toppled.length} tower${latestRound.toppled.length === 1 ? '' : 's'}!</strong>
       </div>`
@@ -672,14 +760,14 @@ function renderGame(state: MatchState, isHost: boolean): string {
     ? state.players.filter((player) => state.winnerIds.includes(player.id))
     : [];
   const outcomeMarkup = state.status === 'resolution'
-    ? `<section class="round-result-banner round-result-round" role="status" aria-live="polite">
+    ? `<section class="round-result-banner round-result-round">
         <span class="round-result-mark" aria-hidden="true">✓</span>
         <div class="round-result-copy"><p class="eyebrow">ROUND ${state.round} COMPLETE</p><h2>The shared wind has passed.</h2><p>The next round starts automatically in ${ROUND_WIND_DISPLAY_MS / 1000} seconds.</p></div>
         ${windResult}
         ${latestRound ? fallSummaryMarkup(latestRound, state, playerId) : ''}
       </section>`
     : state.status === 'finished'
-      ? `<section class="round-result-banner round-result-winner" role="status" aria-live="polite">
+      ? `<section class="round-result-banner round-result-winner">
           <span class="round-result-mark" aria-hidden="true">★</span>
           <div class="round-result-copy"><p class="eyebrow">GAME OVER · TARGET ${state.targetPoints}</p>
             <h2>${winners.length > 1 ? 'Shared victory!' : `${escapeHtml(winners[0]?.name ?? 'A player')} wins!`}</h2>
@@ -758,6 +846,9 @@ function towerBoardMarkup(
   const pendingTowerCount = showBuildChanges
     ? Array.from(selectedAllocations.keys()).filter((key) => key.startsWith('new-')).length
     : 0;
+  const windShield = state.status === 'resolution'
+    ? state.history.at(-1)?.windShields[player.id] ?? towerShield(player.towers.length)
+    : towerShield(player.towers.length + pendingTowerCount);
   const hasFloorBudget = building && spent < turnDie;
   const canAddNewTower = hasFloorBudget &&
     pendingTowerCount === 0 &&
@@ -771,7 +862,7 @@ function towerBoardMarkup(
   const existingTowerSlot = (tower: Tower) => {
     const additionalHeight = showBuildChanges ? selectedAllocations.get(tower.id) ?? 0 : 0;
     const height = tower.height + additionalHeight;
-    const limit = heightLimit(height) + towerShield(player.towers.length + pendingTowerCount);
+    const limit = heightLimit(height) + windShield;
     const atRisk = wind !== null && wind >= limit;
     const selected = banking && selectedBankTowerId === tower.id;
     const disabled = !building && !banking || (building && !hasFloorBudget);
@@ -792,7 +883,7 @@ function towerBoardMarkup(
     const pending = height !== undefined;
     const disabled = pending ? !hasFloorBudget : !canAddNewTower;
     const limit = pending
-      ? heightLimit(height) + towerShield(player.towers.length + pendingTowerCount)
+      ? heightLimit(height) + windShield
       : 0;
     const atRisk = pending && wind !== null && wind >= limit;
     const worth = pending ? towerPoints(height) : 0;
@@ -854,7 +945,7 @@ function rulesMarkup(): string {
     </section>
     <section class="rules-section rules-wind-section"><h3>Wind and tower protection</h3>
       <p>The two shared dice are added together for a wind strength from 2 to 12. An unbanked tower topples when the wind reaches or exceeds its limit. Each standing tower beyond the first adds +1 protection to every tower, up to +${MAX_TOWER_SHIELD}. Protection is calculated before the wind tests the skyline.</p>
-      <div class="limit-table"><span>Height</span><span>Topples at wind</span>${[1, 2, 3, 4, 5, 6, 7].map((height) => `<b>${height === 7 ? '7+' : height}</b><b>${heightLimit(height)} or higher</b>`).join('')}</div>
+      <div class="limit-table"><span>Height</span><span>Topples at wind</span>${Array.from({ length: 11 }, (_, index) => index + 1).map((height) => `<b>${height === 11 ? '11+' : height}</b><b>${heightLimit(height)} or higher</b>`).join('')}</div>
     </section>
     <section class="rules-section"><h3>Winning</h3>
       <p>If a player reaches the target after a round resolves, the player with the highest score wins. Tied high scores share the victory and each winner earns one room win.</p>
@@ -1789,7 +1880,9 @@ app.addEventListener('click', async (event) => {
       }
       render();
     } else if (action === 'rules') {
-      window.alert(localizeText(`Players choose and submit turns in parallel. Building rolls one die; add floors to existing towers or start one new tower in an empty slot. Each tower shows its bank value. Use Undo one to take a floor back; you can have up to ${MAX_TOWERS} standing towers. Banking scores one tower for 1 + 2 + … + height and does not roll a die. After everyone submits, the shared two-die wind tests all standing towers. Every tower beyond your first adds +1 wind protection to all your towers, up to +3. First to the target wins.`, language));
+      window.alert(
+        `${localizeText(`Players choose and submit turns in parallel. Building rolls one die; add floors to existing towers or start one new tower in an empty slot. Each tower shows its bank value. Use Undo one to take a floor back; you can have up to ${MAX_TOWERS} standing towers. Banking scores one tower for 1 + 2 + … + height and does not roll a die. After everyone submits, the shared two-die wind tests all standing towers. Every tower beyond your first adds +1 wind protection to all your towers, up to +3. First to the target wins.`, language)}\n\n${localizeText('Round order: resolve everyone’s submitted builds and banks, then award bank points. If anyone reaches the target, the game ends before the wind check. Otherwise, calculate protection from towers still standing (banked towers are removed and do not protect the skyline), then check all remaining towers together. Each standing tower beyond the first adds +1 to every tower’s base limit, up to +3. A tower topples when the two-die wind total is equal to or greater than its base limit plus protection. Base limit by height: 1 = 12, 2 = 11, 3 = 10, 4 = 9, 5 = 8, 6 = 7, 7 = 6, 8 = 5, 9 = 4, 10 = 3, 11+ = 2.', language)}`,
+      );
     }
   } catch (error) {
     showFailure(error instanceof Error ? error.message : 'That action could not be completed.');

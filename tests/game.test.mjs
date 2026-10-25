@@ -81,11 +81,37 @@ test('localizes interface text in the supported languages and preserves English'
   assert.equal(localizeText('e.g. Alex', 'fr'), 'ex. Alex');
   assert.equal(localizeText('e.g. 7K2M-Q9RX', 'da'), 'fx 7K2M-Q9RX');
   assert.equal(localizeText('Every player must choose and submit one action before the shared wind is rolled.', 'de'), 'Alle Spieler müssen eine Aktion wählen und abgeben, bevor der gemeinsame Wind gewürfelt wird.');
+  const windResolutionRules = 'Round order: resolve everyone’s submitted builds and banks, then award bank points. If anyone reaches the target, the game ends before the wind check. Otherwise, calculate protection from towers still standing (banked towers are removed and do not protect the skyline), then check all remaining towers together. Each standing tower beyond the first adds +1 to every tower’s base limit, up to +3. A tower topples when the two-die wind total is equal to or greater than its base limit plus protection. Base limit by height: 1 = 12, 2 = 11, 3 = 10, 4 = 9, 5 = 8, 6 = 7, 7 = 6, 8 = 5, 9 = 4, 10 = 3, 11+ = 2.';
+  assert.deepEqual(
+    LANGUAGES.slice(1).map(({ code }) => localizeText(windResolutionRules, code) !== windResolutionRules),
+    [true, true, true, true, true, true],
+  );
   assert.equal(localizeText('Could not resolve this round.', 'es'), 'No se pudo resolver esta ronda.');
+  assert.equal(localizeText('  Your skyline ', 'nl'), '  Jouw skyline ');
+  assert.equal(localizeText('Win target: ', 'fr'), 'Score à atteindre : ');
+  assert.equal(localizeText('Connecting to the host. Keep this page open; the lobby will appear when the connection is ready.', 'de'), 'Verbindung zum Host wird hergestellt. Lass diese Seite geöffnet; die Lobby erscheint, sobald die Verbindung bereit ist.');
+  assert.equal(localizeText('The room is not connected to the signaling service.', 'es'), 'La sala no está conectada al servicio de señalización.');
+  assert.deepEqual(
+    ['nl', 'fy', 'de', 'fr', 'es', 'da'].map((language) =>
+      `${localizeText('Everyone’s ', language)}${localizeText('turn.', language)}`),
+    [
+      'Iedereen is aan de beurt.',
+      'Elkenien is oan de beurt.',
+      'Alle sind an der Reihe.',
+      'C’est au tour de chacun.',
+      'Es el turno de todos.',
+      'Alle er på tur.',
+    ],
+  );
+  assert.equal(localizeText('Bank', 'nl'), 'Veiligstellen');
+  assert.equal(localizeText('Bank tower for +3 points', 'nl'), 'Stel de toren veilig voor +3 punten');
 });
 
 test('uses approved base wind limits and triangular bank score', () => {
-  assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 12].map(heightLimit), [12, 11, 10, 9, 8, 7, 6, 6]);
+  assert.deepEqual(
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(heightLimit),
+    [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 2],
+  );
   assert.deepEqual([1, 2, 3, 4, 5].map(towerPoints), [1, 3, 6, 10, 15]);
 });
 
@@ -272,6 +298,33 @@ test('more towers grant capped wind protection to every standing tower', () => {
   assert.equal(result.history[0].toppled.length, 0);
 });
 
+test('an unprotected tower of height eleven topples at wind two', () => {
+  const state = activeState([
+    player('a', { towers: [{ id: 'a1', height: 11 }] }),
+    player('b'),
+  ]);
+  const result = finishRound(state, {}, [1, 1]);
+  assert.deepEqual(result.history[0].toppled, [
+    { playerId: 'a', towerId: 'a1', height: 11, limit: 2 },
+  ]);
+  assert.deepEqual(result.players[0].towers, []);
+});
+
+test('round results retain the wind protection used before toppled towers are removed', () => {
+  const state = activeState([
+    player('a', { towers: [
+      { id: 'a1', height: 7 },
+      { id: 'a2', height: 5 },
+      { id: 'a3', height: 5 },
+    ] }),
+    player('b'),
+  ]);
+  const result = finishRound(state, {}, [4, 5]);
+  assert.deepEqual(result.players[0].towers.map((tower) => tower.id), ['a2', 'a3']);
+  assert.equal(result.history[0].windShields.a, 2);
+  assert.deepEqual(result.history[0].toppled.map((tower) => tower.limit), [8]);
+});
+
 test('banking is exclusive, scores the selected tower, and protects it from wind', () => {
   const state = activeState([
     player('a', { towers: [{ id: 'a1', height: 2 }, { id: 'a2', height: 1 }] }),
@@ -379,6 +432,7 @@ test('player views hide opponents towers but preserve public wind-topple data', 
   assert.deepEqual(view.players.find((item) => item.id === 'b').towers, []);
   assert.deepEqual(view.history[0].toppled.map((item) => item.playerId), ['a', 'b']);
   assert.deepEqual(view.history[0].fallenCounts, { a: 1, b: 1 });
+  assert.deepEqual(view.history[0].windShields, { a: 0 });
 });
 
 test('player views reveal round points without exposing opponents banking details', () => {

@@ -47,6 +47,7 @@ export interface RoundResolution {
   turnRolls: RoundTurnRoll[];
   dice: [number, number];
   wind: number;
+  windShields: Record<string, number>;
   fallenCounts: Record<string, number>;
   actions: RoundAction[];
   banked: { playerId: string; towerHeight: number; points: number }[];
@@ -95,7 +96,7 @@ export function heightLimit(height: number): number {
   if (!Number.isInteger(height) || height < 1) {
     throw new Error('Tower height must be a positive integer.');
   }
-  return height >= 7 ? 6 : 13 - height;
+  return Math.max(2, 13 - height);
 }
 
 export function towerPoints(height: number): number {
@@ -294,6 +295,9 @@ export function createPlayerView(state: MatchState, playerId: string): MatchStat
       ...round,
       actions: round.actions.filter((action) => action.playerId === playerId),
       banked: round.banked.filter((banked) => banked.playerId === playerId),
+      windShields: Object.fromEntries(
+        Object.entries(round.windShields).filter(([id]) => id === playerId),
+      ),
       fallenCounts: { ...round.fallenCounts },
     })),
   };
@@ -387,6 +391,7 @@ export function resolveRound(
     turnRolls: roundTurnRolls,
     dice: [...dice],
     wind,
+    windShields: Object.fromEntries(players.map((item) => [item.id, towerShield(item.towers.length)])),
     fallenCounts: Object.fromEntries(players.map((item) => [item.id, 0])),
     actions: roundActions,
     banked: roundBanked,
@@ -403,7 +408,7 @@ export function resolveRound(
   if (!gameEnded) {
     for (const item of players) {
       const standing: Tower[] = [];
-      const shield = towerShield(item.towers.length);
+      const shield = resolution.windShields[item.id];
       for (const tower of item.towers) {
         const limit = heightLimit(tower.height) + shield;
         if (wind >= limit) {
