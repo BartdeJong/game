@@ -1,4 +1,5 @@
 import {
+  MAX_TOWERS,
   MAX_WIN_POINTS,
   MIN_WIN_POINTS,
   type MatchState,
@@ -7,6 +8,7 @@ import {
 
 export type PeerMessage =
   | { type: 'join'; playerId: string; name: string }
+  | { type: 'build'; playerId: string }
   | { type: 'action'; playerId: string; action: PlayerAction }
   | { type: 'state'; state: MatchState; submittedCount: number; playerId: string }
   | { type: 'error'; message: string };
@@ -23,6 +25,7 @@ export function parseMessage(data: string): PeerMessage {
     'playerId' in value &&
     isMatchState(value.state) &&
     typeof value.submittedCount === 'number' &&
+    value.submittedCount >= 0 &&
     typeof value.playerId === 'string'
   ) {
     return {
@@ -41,32 +44,38 @@ export function parseMessage(data: string): PeerMessage {
     }
     return { type: 'join', playerId: value.playerId, name: value.name };
   }
+  if (value.type === 'build' && 'playerId' in value && typeof value.playerId === 'string') {
+    return { type: 'build', playerId: value.playerId };
+  }
   if (value.type === 'action' && 'playerId' in value && 'action' in value) {
-    if (typeof value.playerId !== 'string') throw new Error('Received an invalid player action.');
-    const action = value.action;
-    if (
-      typeof action !== 'object' ||
-      action === null ||
-      !('kind' in action) ||
-      (action.kind !== 'new' && action.kind !== 'build' && action.kind !== 'bank') ||
-      ((action.kind === 'build' || action.kind === 'bank') &&
-        (!('towerId' in action) || typeof action.towerId !== 'string'))
-    ) {
+    if (typeof value.playerId !== 'string' || !isPlayerAction(value.action)) {
       throw new Error('Received an invalid player action.');
     }
-    if (action.kind === 'new') {
-      return { type: 'action', playerId: value.playerId, action: { kind: 'new' } };
-    }
-    if ('towerId' in action && typeof action.towerId === 'string') {
-      return {
-        type: 'action',
-        playerId: value.playerId,
-        action: { kind: action.kind, towerId: action.towerId },
-      };
-    }
-    throw new Error('Received an invalid player action.');
+    return { type: 'action', playerId: value.playerId, action: value.action };
   }
   throw new Error('Received an unsupported game message.');
+}
+
+function isPlayerAction(value: unknown): value is PlayerAction {
+  if (typeof value !== 'object' || value === null || !('kind' in value)) return false;
+  if (value.kind === 'bank') {
+    return 'towerId' in value && typeof value.towerId === 'string';
+  }
+  if (value.kind !== 'build' || !('placements' in value) || !Array.isArray(value.placements)) return false;
+  return value.placements.every((placement) =>
+    typeof placement === 'object' &&
+    placement !== null &&
+    'towerId' in placement &&
+    (placement.towerId === null || typeof placement.towerId === 'string') &&
+    'elements' in placement &&
+    typeof placement.elements === 'number' &&
+    Number.isInteger(placement.elements) &&
+    placement.elements >= 1 &&
+    (!('slot' in placement) ||
+      (typeof placement.slot === 'number' &&
+        Number.isInteger(placement.slot) &&
+        placement.slot >= 0 &&
+        placement.slot < MAX_TOWERS)));
 }
 
 function isMatchState(value: unknown): value is MatchState {
@@ -92,35 +101,94 @@ function isMatchState(value: unknown): value is MatchState {
     !Array.isArray(value.winnerIds) ||
     !('nextTowerId' in value) ||
     typeof value.nextTowerId !== 'number' ||
+    !('currentPlayerIndex' in value) ||
+    typeof value.currentPlayerIndex !== 'number' ||
+    !Number.isInteger(value.currentPlayerIndex) ||
+    !('roundTurnRolls' in value) ||
+    !Array.isArray(value.roundTurnRolls) ||
+    !('roundActions' in value) ||
+    !Array.isArray(value.roundActions) ||
+    !('roundBanked' in value) ||
+    !Array.isArray(value.roundBanked) ||
+    !('turnDie' in value) ||
+    (value.turnDie !== null &&
+      (typeof value.turnDie !== 'number' ||
+        !Number.isInteger(value.turnDie) ||
+        value.turnDie < 1 ||
+        value.turnDie > 6)) ||
+    !('turnMode' in value) ||
+    (value.turnMode !== null && value.turnMode !== 'choose' && value.turnMode !== 'build') ||
     !('dice' in value)
   ) {
     return false;
   }
   if (
     !value.history.every((round) => isRoundHistoryEntry(round)) ||
-    value.players.some((player) => !isPlayerState(player))
+    value.players.some((player) => !isPlayerState(player)) ||
+    value.currentPlayerIndex < 0 ||
+    (value.players.length > 0 && value.currentPlayerIndex >= value.players.length)
   ) {
     return false;
   }
-  if (value.status === 'lobby' || value.status === 'choice') return value.dice === null;
-  return Array.isArray(value.dice) &&
+  if (value.status === 'lobby') return value.dice === null && value.turnDie === null && value.turnMode === null;
+  if (value.status === 'choice') {
+    return value.dice === null &&
+      ((value.turnMode === 'choose' && value.turnDie === null) ||
+        (value.turnMode === 'build' && value.turnDie !== null));
+  }
+  if (value.status === 'resolution' && value.dice === null) {
+    return value.turnDie === null && value.turnMode === null;
+  }
+  return value.turnDie === null &&
+    value.turnMode === null &&
+    Array.isArray(value.dice) &&
     value.dice.length === 2 &&
     value.dice.every((die) => typeof die === 'number' && Number.isInteger(die) && die >= 1 && die <= 6);
 }
 
 function isPlayerState(value: unknown): boolean {
-  return typeof value === 'object' &&
-    value !== null &&
-    'id' in value &&
-    typeof value.id === 'string' &&
-    'roomWins' in value &&
-    typeof value.roomWins === 'number' &&
-    Number.isInteger(value.roomWins) &&
-    value.roomWins >= 0;
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('id' in value) ||
+    typeof value.id !== 'string' ||
+    !('roomWins' in value) ||
+    typeof value.roomWins !== 'number' ||
+    !Number.isInteger(value.roomWins) ||
+    value.roomWins < 0 ||
+    !('towers' in value) ||
+    !Array.isArray(value.towers) ||
+    value.towers.length > MAX_TOWERS
+  ) return false;
+  const slots = new Set<number>();
+  return value.towers.every((tower, index) => {
+    if (
+      typeof tower !== 'object' ||
+      tower === null ||
+      !('id' in tower) ||
+      typeof tower.id !== 'string' ||
+      !('height' in tower) ||
+      typeof tower.height !== 'number' ||
+      !Number.isInteger(tower.height) ||
+      tower.height < 1
+    ) return false;
+    const slot = 'slot' in tower ? tower.slot : index;
+    if (typeof slot !== 'number' || !Number.isInteger(slot) || slot < 0 || slot >= MAX_TOWERS || slots.has(slot)) {
+      return false;
+    }
+    slots.add(slot);
+    return true;
+  });
 }
 
 function isRoundHistoryEntry(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null || !('fallenCounts' in value)) return false;
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('fallenCounts' in value) ||
+    !('toppled' in value) ||
+    !Array.isArray(value.toppled)
+  ) return false;
   const counts = value.fallenCounts;
   return typeof counts === 'object' &&
     counts !== null &&

@@ -1,12 +1,15 @@
 export const MAX_PLAYERS = 5;
+export const MAX_TOWERS = 7;
 export const MIN_PLAYERS = 2;
 export const DEFAULT_WIN_POINTS = 80;
 export const MIN_WIN_POINTS = 10;
 export const MAX_WIN_POINTS = 200;
+export const MAX_TOWER_SHIELD = 3;
 
 export interface Tower {
   id: string;
   height: number;
+  slot: number;
 }
 
 export interface Player {
@@ -20,9 +23,14 @@ export interface Player {
   isBot?: boolean;
 }
 
+export interface Placement {
+  towerId: string | null;
+  elements: number;
+  slot?: number;
+}
+
 export type PlayerAction =
-  | { kind: 'new' }
-  | { kind: 'build'; towerId: string }
+  | { kind: 'build'; placements: Placement[] }
   | { kind: 'bank'; towerId: string };
 
 export interface RoundAction {
@@ -32,6 +40,7 @@ export interface RoundAction {
 
 export interface RoundResolution {
   round: number;
+  turnRolls: { playerId: string; choice: 'build' | 'bank'; die: number | null }[];
   dice: [number, number];
   wind: number;
   fallenCounts: Record<string, number>;
@@ -45,6 +54,12 @@ export interface MatchState {
   round: number;
   targetPoints: number;
   dice: [number, number] | null;
+  turnDie: number | null;
+  turnMode: 'choose' | 'build' | null;
+  currentPlayerIndex: number;
+  roundTurnRolls: { playerId: string; choice: 'build' | 'bank'; die: number | null }[];
+  roundActions: RoundAction[];
+  roundBanked: { playerId: string; towerHeight: number; points: number }[];
   players: Player[];
   history: RoundResolution[];
   winnerIds: string[];
@@ -58,6 +73,12 @@ export function createMatch(host: Player, targetPoints = DEFAULT_WIN_POINTS): Ma
     round: 0,
     targetPoints,
     dice: null,
+    turnDie: null,
+    turnMode: null,
+    currentPlayerIndex: 0,
+    roundTurnRolls: [],
+    roundActions: [],
+    roundBanked: [],
     players: [{ ...host, towers: [], score: 0, bankedTowers: 0, roomWins: host.roomWins ?? 0, connected: true }],
     history: [],
     winnerIds: [],
@@ -85,9 +106,62 @@ export function towerPoints(height: number): number {
   return (height * (height + 1)) / 2;
 }
 
-export function isLegalAction(player: Player, action: PlayerAction): boolean {
-  if (action.kind === 'new') return true;
-  return player.towers.some((tower) => tower.id === action.towerId);
+export function towerShield(towerCount: number): number {
+  if (!Number.isInteger(towerCount) || towerCount < 0) {
+    throw new Error('Tower count must be a non-negative integer.');
+  }
+  return Math.min(Math.max(0, towerCount - 1), MAX_TOWER_SHIELD);
+}
+
+export function isLegalAction(
+  player: Player,
+  action: PlayerAction,
+  turnMode: 'choose' | 'build' | null,
+  turnDie: number | null,
+): boolean {
+  if (action.kind === 'bank') {
+    return turnMode === 'choose' &&
+      turnDie === null &&
+      player.towers.some((tower) => tower.id === action.towerId);
+  }
+  if (
+    turnMode !== 'build' ||
+    turnDie === null ||
+    !Number.isInteger(turnDie) ||
+    turnDie < 1 ||
+    turnDie > 6 ||
+    !Array.isArray(action.placements)
+  ) return false;
+  const seenTowerIds = new Set<string>();
+  const occupiedSlots = new Set(player.towers.map((tower, index) => tower.slot ?? index));
+  let totalElements = 0;
+  let newTowerCount = 0;
+  for (const placement of action.placements) {
+    if (!Number.isInteger(placement.elements) || placement.elements < 1) return false;
+    totalElements += placement.elements;
+    if (placement.towerId === null) {
+      const slot = placement.slot ?? firstAvailableTowerSlot(occupiedSlots);
+      if (
+        slot === null ||
+        !Number.isInteger(slot) ||
+        slot < 0 ||
+        slot >= MAX_TOWERS ||
+        occupiedSlots.has(slot)
+      ) return false;
+      occupiedSlots.add(slot);
+      newTowerCount += 1;
+      if (newTowerCount > 1) return false;
+      continue;
+    }
+    if (
+      seenTowerIds.has(placement.towerId) ||
+      !player.towers.some((tower) => tower.id === placement.towerId)
+    ) {
+      return false;
+    }
+    seenTowerIds.add(placement.towerId);
+  }
+  return totalElements <= turnDie && player.towers.length + newTowerCount <= MAX_TOWERS;
 }
 
 export function beginGame(state: MatchState): MatchState {
@@ -95,7 +169,32 @@ export function beginGame(state: MatchState): MatchState {
     throw new Error('The room needs 2–5 players before the game can start.');
   }
   validateTargetPoints(state.targetPoints);
-  return { ...state, status: 'choice', round: 1, dice: null, history: [], winnerIds: [] };
+  return {
+    ...state,
+    status: 'choice',
+    round: 1,
+    dice: null,
+    turnDie: null,
+    turnMode: 'choose',
+    currentPlayerIndex: 0,
+    roundTurnRolls: [],
+    roundActions: [],
+    roundBanked: [],
+    players: state.players.map((player) => ({
+      ...player,
+      towers: player.towers.map((tower, slot) => ({ ...tower, slot })),
+    })),
+    history: [],
+    winnerIds: [],
+  };
+}
+
+export function beginBuildingTurn(state: MatchState, turnDie: number): MatchState {
+  if (state.status !== 'choice' || state.turnMode !== 'choose' || state.turnDie !== null) {
+    throw new Error('Choose building before rolling the die.');
+  }
+  validateDie(turnDie);
+  return { ...state, turnMode: 'build', turnDie };
 }
 
 export function returnToLobby(state: MatchState): MatchState {
@@ -107,6 +206,12 @@ export function returnToLobby(state: MatchState): MatchState {
     status: 'lobby',
     round: 0,
     dice: null,
+    turnDie: null,
+    turnMode: null,
+    currentPlayerIndex: 0,
+    roundTurnRolls: [],
+    roundActions: [],
+    roundBanked: [],
     players: resetGamePlayers(state.players),
     history: [],
     winnerIds: [],
@@ -130,6 +235,12 @@ export function beginRematch(state: MatchState): MatchState {
     status: 'choice',
     round: 1,
     dice: null,
+    turnDie: null,
+    turnMode: 'choose',
+    currentPlayerIndex: 0,
+    roundTurnRolls: [],
+    roundActions: [],
+    roundBanked: [],
     players: resetGamePlayers(state.players),
     history: [],
     winnerIds: [],
@@ -148,14 +259,28 @@ function resetGamePlayers(players: Player[]): Player[] {
 
 export function beginNextRound(state: MatchState): MatchState {
   if (state.status !== 'resolution') {
-    throw new Error('The next round can only start after a round resolves.');
+    throw new Error('The next turn can only start after the previous turn resolves.');
   }
-  return { ...state, status: 'choice', round: state.round + 1, dice: null };
+  const windResolved = state.dice !== null;
+  return {
+    ...state,
+    status: 'choice',
+    round: windResolved ? state.round + 1 : state.round,
+    dice: null,
+    turnDie: null,
+    turnMode: 'choose',
+    currentPlayerIndex: windResolved ? 0 : (state.currentPlayerIndex + 1) % state.players.length,
+    roundTurnRolls: windResolved ? [] : state.roundTurnRolls,
+    roundActions: windResolved ? [] : state.roundActions,
+    roundBanked: windResolved ? [] : state.roundBanked,
+  };
 }
 
 export function createPlayerView(state: MatchState, playerId: string): MatchState {
   return {
     ...state,
+    roundActions: state.roundActions.filter((action) => action.playerId === playerId),
+    roundBanked: state.roundBanked.filter((banked) => banked.playerId === playerId),
     players: state.players.map((player) => ({
       ...player,
       towers: player.id === playerId ? player.towers.map((tower) => ({ ...tower })) : [],
@@ -164,7 +289,6 @@ export function createPlayerView(state: MatchState, playerId: string): MatchStat
       ...round,
       actions: round.actions.filter((action) => action.playerId === playerId),
       banked: round.banked.filter((banked) => banked.playerId === playerId),
-      toppled: round.toppled.filter((tower) => tower.playerId === playerId),
       fallenCounts: { ...round.fallenCounts },
     })),
   };
@@ -172,88 +296,144 @@ export function createPlayerView(state: MatchState, playerId: string): MatchStat
 
 export function resolveRound(
   state: MatchState,
-  actions: Map<string, PlayerAction>,
-  dice: [number, number],
+  action: PlayerAction,
+  dice: [number, number] | null,
 ): MatchState {
-  if (state.status !== 'choice' || state.dice !== null) {
-    throw new Error('There is no active round to resolve.');
+  if (state.status !== 'choice' || state.dice !== null || state.turnMode === null) {
+    throw new Error('There is no active turn to resolve.');
   }
-  if (actions.size !== state.players.length || state.players.some((player) => !actions.has(player.id))) {
-    throw new Error('Every player must submit one action.');
+  const player = state.players[state.currentPlayerIndex];
+  if (!player || !isLegalAction(player, action, state.turnMode, state.turnDie)) {
+    throw new Error(`Invalid turn for ${player?.name ?? 'the active player'}.`);
   }
-  for (const player of state.players) {
-    const action = actions.get(player.id);
-    if (!action || !isLegalAction(player, action)) {
-      throw new Error(`Invalid action for ${player.name}.`);
+  const actedPlayerIds = new Set(state.roundTurnRolls.map((turn) => turn.playerId));
+  if (
+    actedPlayerIds.size !== state.roundTurnRolls.length ||
+    actedPlayerIds.has(player.id) ||
+    state.players.find((item) => !actedPlayerIds.has(item.id))?.id !== player.id
+  ) {
+    throw new Error('Players must take one turn each, in order, before the wind is rolled.');
+  }
+  const finalPlayerTurn = state.players.every((item) => item.id === player.id || actedPlayerIds.has(item.id));
+  if (finalPlayerTurn !== (dice !== null)) {
+    throw new Error(finalPlayerTurn
+      ? 'The shared wind must be rolled after every player has taken a turn.'
+      : 'The shared wind cannot be rolled until every player has taken a turn.');
+  }
+  if (dice) validateDice(dice);
+
+  const players = state.players.map((item) => ({
+    ...item,
+    towers: item.towers.map((tower) => ({ ...tower })),
+  }));
+  const activePlayer = players[state.currentPlayerIndex]!;
+  let nextTowerId = state.nextTowerId;
+  const roundTurnRolls = [...state.roundTurnRolls, {
+    playerId: activePlayer.id,
+    choice: action.kind,
+    die: action.kind === 'build' ? state.turnDie : null,
+  }];
+  const roundActions = [...state.roundActions];
+  const roundBanked = [...state.roundBanked];
+  let bankedEntry: { playerId: string; towerHeight: number; points: number } | null = null;
+  if (action.kind === 'bank') {
+    const index = activePlayer.towers.findIndex((tower) => tower.id === action.towerId);
+    const [tower] = activePlayer.towers.splice(index, 1);
+    const points = towerPoints(tower!.height);
+    activePlayer.score += points;
+    activePlayer.bankedTowers += 1;
+    bankedEntry = { playerId: activePlayer.id, towerHeight: tower!.height, points };
+    roundBanked.push(bankedEntry);
+  }
+
+  let placedElements = 0;
+  if (action.kind === 'build') {
+    for (const placement of action.placements) {
+      placedElements += placement.elements;
+      if (placement.towerId === null) {
+        const id = `tower-${nextTowerId++}`;
+        const occupiedSlots = new Set(activePlayer.towers.map((tower) => tower.slot));
+        const slot = placement.slot ?? firstAvailableTowerSlot(occupiedSlots);
+        if (slot === null) throw new Error('There are no open tower slots.');
+        activePlayer.towers.push({ id, height: placement.elements, slot });
+      } else {
+        const tower = activePlayer.towers.find((item) => item.id === placement.towerId)!;
+        tower.height += placement.elements;
+      }
     }
   }
-  validateDice(dice);
 
-  const players = state.players.map((player) => ({
-    ...player,
-    towers: player.towers.map((tower) => ({ ...tower })),
-  }));
-  let nextTowerId = state.nextTowerId;
-  const wind = dice[0] + dice[1];
+  const descriptions: string[] = [];
+  if (placedElements > 0) {
+    descriptions.push(`added ${placedElements} floor${placedElements === 1 ? '' : 's'}`);
+  }
+  if (action.kind === 'bank' && bankedEntry) {
+    descriptions.push(`banked height ${bankedEntry.towerHeight} (+${bankedEntry.points})`);
+  }
+  roundActions.push({
+    playerId: activePlayer.id,
+    description: descriptions.join(' and ') || 'passed',
+  });
+
+  if (!finalPlayerTurn) {
+    return {
+      ...state,
+      dice: null,
+      turnDie: null,
+      turnMode: null,
+      status: 'resolution',
+      players,
+      roundTurnRolls,
+      roundActions,
+      roundBanked,
+      nextTowerId,
+    };
+  }
+
+  const windDice = dice!;
+  const wind = windDice[0] + windDice[1];
   const resolution: RoundResolution = {
     round: state.round,
-    dice: [...dice],
+    turnRolls: roundTurnRolls,
+    dice: [...windDice],
     wind,
-    fallenCounts: Object.fromEntries(players.map((player) => [player.id, 0])),
-    actions: [],
-    banked: [],
+    fallenCounts: Object.fromEntries(players.map((item) => [item.id, 0])),
+    actions: roundActions,
+    banked: roundBanked,
     toppled: [],
   };
 
-  for (const player of players) {
-    const action = actions.get(player.id)!;
-    if (action.kind === 'new') {
-      const id = `tower-${nextTowerId++}`;
-      player.towers.push({ id, height: 1 });
-      resolution.actions.push({ playerId: player.id, description: 'Started a tower' });
-    } else if (action.kind === 'build') {
-      const tower = player.towers.find((item) => item.id === action.towerId)!;
-      tower.height += 1;
-      resolution.actions.push({ playerId: player.id, description: `Added a floor (tower now ${tower.height})` });
-    } else {
-      const index = player.towers.findIndex((item) => item.id === action.towerId);
-      const [tower] = player.towers.splice(index, 1);
-      const points = towerPoints(tower.height);
-      player.score += points;
-      player.bankedTowers += 1;
-      resolution.banked.push({ playerId: player.id, towerHeight: tower.height, points });
-      resolution.actions.push({ playerId: player.id, description: `Banked height ${tower.height} (+${points})` });
-    }
-  }
-
-  for (const player of players) {
+  for (const item of players) {
     const standing: Tower[] = [];
-    for (const tower of player.towers) {
-      const limit = heightLimit(tower.height);
+    const shield = towerShield(item.towers.length);
+    for (const tower of item.towers) {
+      const limit = heightLimit(tower.height) + shield;
       if (wind >= limit) {
-        resolution.toppled.push({ playerId: player.id, towerId: tower.id, height: tower.height, limit });
-        resolution.fallenCounts[player.id] = (resolution.fallenCounts[player.id] ?? 0) + 1;
+        resolution.toppled.push({ playerId: item.id, towerId: tower.id, height: tower.height, limit });
+        resolution.fallenCounts[item.id] = (resolution.fallenCounts[item.id] ?? 0) + 1;
       } else {
         standing.push(tower);
       }
     }
-    player.towers = standing;
+    item.towers = standing;
   }
 
-  const gameEnded = players.some((player) => player.score >= state.targetPoints);
-  const highScore = Math.max(...players.map((player) => player.score));
+  const gameEnded = players.some((item) => item.score >= state.targetPoints);
+  const highScore = Math.max(...players.map((item) => item.score));
   const winnerIds = gameEnded
-    ? players.filter((player) => player.score === highScore).map((player) => player.id)
+    ? players.filter((item) => item.score === highScore).map((item) => item.id)
     : [];
   if (gameEnded) {
-    for (const player of players) {
-      if (winnerIds.includes(player.id)) player.roomWins += 1;
+    for (const item of players) {
+      if (winnerIds.includes(item.id)) item.roomWins += 1;
     }
   }
 
   return {
     ...state,
-    dice: [...dice],
+    dice: [...windDice],
+    turnDie: null,
+    turnMode: null,
     status: gameEnded ? 'finished' : 'resolution',
     players,
     history: [...state.history, resolution],
@@ -262,8 +442,21 @@ export function resolveRound(
   };
 }
 
+function validateDie(die: number): void {
+  if (!Number.isInteger(die) || die < 1 || die > 6) {
+    throw new Error('The die must show a whole number from 1 to 6.');
+  }
+}
+
+function firstAvailableTowerSlot(occupiedSlots: Set<number>): number | null {
+  for (let slot = 0; slot < MAX_TOWERS; slot += 1) {
+    if (!occupiedSlots.has(slot)) return slot;
+  }
+  return null;
+}
+
 function validateDice(dice: [number, number]): void {
   if (dice.length !== 2 || dice.some((value) => !Number.isInteger(value) || value < 1 || value > 6)) {
-    throw new Error('Each die must show a whole number from 1 to 6.');
+    throw new Error('Each wind die must show a whole number from 1 to 6.');
   }
 }
