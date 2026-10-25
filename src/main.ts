@@ -34,10 +34,31 @@ interface HostConnection {
   playerId: string | null;
 }
 
+interface HostRecoveryRecord {
+  version: 1;
+  roomCode: string;
+  hostId: string;
+  playerName: string;
+  state: MatchState;
+  submitted: Array<[string, PlayerAction]>;
+  resumeTokens: Record<string, string>;
+}
+
+interface GuestRecoveryRecord {
+  version: 1;
+  roomCode: string;
+  playerId: string;
+  playerName: string;
+  resumeToken: string;
+}
+
 type Screen = 'home' | 'host' | 'guest-setup' | 'guest';
 
 const app = document.querySelector<HTMLElement>('#app');
 if (!app) throw new Error('The game page is missing its app container.');
+
+const HOST_RECOVERY_KEY = 'skyline-dice.host-recovery.v1';
+const GUEST_RECOVERY_KEY = 'skyline-dice.guest-recovery.v1';
 
 let screen: Screen = 'home';
 let hostState: MatchState | null = null;
@@ -56,18 +77,29 @@ let guestBuildRequested = false;
 let hostConnections = new Set<HostConnection>();
 let hostPeer: Peer | null = null;
 let hostRoomCode = '';
+let hostResumeTokens = new Map<string, string>();
 let creatingRoomCode = false;
 let roomGeneration = 0;
 let guestPeer: Peer | null = null;
 let guestChannel: DataConnection | null = null;
+let guestConnecting = false;
+let guestRoomCode = '';
+let guestResumeToken = '';
+let hostRecoveryAvailable: HostRecoveryRecord | null = null;
+let guestRecoveryAvailable: GuestRecoveryRecord | null = null;
+let recoveryReadError = false;
 let notice = '';
 let failure = '';
+let notificationTimer: number | null = null;
+let trackedNotification = '';
 let autoRollTimer: number | null = null;
 let botResolveTimer: number | null = null;
 
 const NEXT_TURN_DELAY_MS = 3_000;
 const ROUND_WIND_DISPLAY_MS = 5_000;
 const BOT_TURN_DELAY_MS = 2_500;
+const NOTICE_DISPLAY_MS = 5_000;
+const FAILURE_DISPLAY_MS = 10_000;
 
 const PEER_OPTIONS = {
   host: '0.peerjs.com',
@@ -106,6 +138,157 @@ function randomId(): string {
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
   const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseHostRecovery(value: unknown): HostRecoveryRecord {
+  if (
+    !isObject(value) ||
+    value.version !== 1 ||
+    typeof value.roomCode !== 'string' ||
+    typeof value.hostId !== 'string' ||
+    typeof value.playerName !== 'string' ||
+    !Array.isArray(value.submitted) ||
+    !isObject(value.resumeTokens)
+  ) {
+    throw new Error('The saved host room has an invalid format.');
+  }
+  const roomCode = normalizeRoomCode(value.roomCode);
+  if (roomCode !== value.roomCode) throw new Error('The saved room code is invalid.');
+  const stateMessage = parseMessage(JSON.stringify({
+    type: 'state',
+    state: value.state,
+    submittedCount: 0,
+    playerId: value.hostId,
+  }));
+  if (stateMessage.type !== 'state') throw new Error('The saved host match is invalid.');
+  const state = stateMessage.state;
+  const hostPlayer = state.players.find((player) => player.id === value.hostId);
+  if (!hostPlayer || hostPlayer.isBot || hostPlayer.name !== value.playerName) {
+    throw new Error('The saved host is not part of this match.');
+  }
+  const playersById = new Map(state.players.map((player) => [player.id, player]));
+  const submitted: Array<[string, PlayerAction]> = [];
+  const submittedIds = new Set<string>();
+  for (const entry of value.submitted) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string') {
+      throw new Error('The saved turn actions are invalid.');
+    }
+    const [playerId, actionValue] = entry;
+    const actionMessage = parseMessage(JSON.stringify({ type: 'action', playerId, action: actionValue }));
+    const player = playersById.get(playerId);
+    if (
+      actionMessage.type !== 'action' ||
+      !player ||
+      submittedIds.has(playerId) ||
+      state.status !== 'choice' ||
+      state.players[state.currentPlayerIndex]?.id !== playerId ||
+      !isLegalAction(player, actionMessage.action, state.turnMode, state.turnDie)
+    ) {
+      throw new Error('The saved turn action cannot be resumed.');
+    }
+    submittedIds.add(playerId);
+    submitted.push([playerId, actionMessage.action]);
+  }
+  const resumeTokens: Record<string, string> = {};
+  for (const [playerId, token] of Object.entries(value.resumeTokens)) {
+    const player = playersById.get(playerId);
+    if (!player || player.isBot || playerId === value.hostId || typeof token !== 'string' || token.length < 1 || token.length > 128) {
+      throw new Error('The saved guest credentials are invalid.');
+    }
+    resumeTokens[playerId] = token;
+  }
+  for (const player of state.players) {
+    if (!player.isBot && player.id !== value.hostId && !resumeTokens[player.id]) {
+      throw new Error('A guest is missing its saved resume credential.');
+    }
+  }
+  return {
+    version: 1,
+    roomCode,
+    hostId: value.hostId,
+    playerName: value.playerName,
+    state,
+    submitted,
+    resumeTokens,
+  };
+}
+
+function parseGuestRecovery(value: unknown): GuestRecoveryRecord {
+  if (
+    !isObject(value) ||
+    value.version !== 1 ||
+    typeof value.roomCode !== 'string' ||
+    typeof value.playerId !== 'string' ||
+    typeof value.playerName !== 'string' ||
+    typeof value.resumeToken !== 'string' ||
+    value.resumeToken.length < 1 ||
+    value.resumeToken.length > 128
+  ) {
+    throw new Error('The saved guest room has an invalid format.');
+  }
+  const roomCode = normalizeRoomCode(value.roomCode);
+  if (roomCode !== value.roomCode) throw new Error('The saved room code is invalid.');
+  return {
+    version: 1,
+    roomCode,
+    playerId: value.playerId,
+    playerName: value.playerName,
+    resumeToken: value.resumeToken,
+  };
+}
+
+function loadRecoveryRecord<T>(key: string, decode: (value: unknown) => T): T | null {
+  let saved: string | null;
+  try {
+    saved = window.localStorage.getItem(key);
+  } catch (error) {
+    failure = `Could not read saved game data from this browser. ${error instanceof Error ? error.message : ''}`.trim();
+    recoveryReadError = true;
+    return null;
+  }
+  if (saved === null) return null;
+  try {
+    return decode(JSON.parse(saved) as unknown);
+  } catch (error) {
+    failure = `Saved game data could not be restored: ${error instanceof Error ? error.message : 'invalid data'}`;
+    recoveryReadError = true;
+    return null;
+  }
+}
+
+function persistRecovery(): void {
+  try {
+    if (screen === 'host' && hostState && hostRoomCode) {
+      const record: HostRecoveryRecord = {
+        version: 1,
+        roomCode: hostRoomCode,
+        hostId,
+        playerName,
+        state: hostState,
+        submitted: Array.from(submitted.entries()),
+        resumeTokens: Object.fromEntries(hostResumeTokens),
+      };
+      window.localStorage.setItem(HOST_RECOVERY_KEY, JSON.stringify(record));
+      hostRecoveryAvailable = record;
+    }
+    if (screen === 'guest' && guestId && guestRoomCode && guestResumeToken) {
+      const record: GuestRecoveryRecord = {
+        version: 1,
+        roomCode: guestRoomCode,
+        playerId: guestId,
+        playerName: guestName,
+        resumeToken: guestResumeToken,
+      };
+      window.localStorage.setItem(GUEST_RECOVERY_KEY, JSON.stringify(record));
+      guestRecoveryAvailable = record;
+    }
+  } catch (error) {
+    failure = `Could not save this game's recovery data. ${error instanceof Error ? error.message : ''}`.trim();
+  }
 }
 
 function waitForPeerOpen(peer: Peer): Promise<void> {
@@ -196,9 +379,37 @@ function showFailure(message: string): void {
 }
 
 function noticeMarkup(): string {
-  if (failure) return `<p class="notice notice-error" role="alert">${escapeHtml(failure)}</p>`;
-  if (notice) return `<p class="notice" role="status">${escapeHtml(notice)}</p>`;
+  if (failure) return `<div class="notice notice-error" role="alert"><span>${escapeHtml(failure)}</span><button class="notice-dismiss" data-action="dismiss-notice" type="button" aria-label="Dismiss notification">×</button></div>`;
+  if (notice) return `<div class="notice" role="status"><span>${escapeHtml(notice)}</span><button class="notice-dismiss" data-action="dismiss-notice" type="button" aria-label="Dismiss notification">×</button></div>`;
   return '';
+}
+
+function syncNotificationTimer(): void {
+  const type = failure ? 'failure' : notice ? 'notice' : '';
+  const message = failure || notice;
+  const key = type ? `${type}:${message}` : '';
+  if (key === trackedNotification) return;
+  if (notificationTimer !== null) window.clearTimeout(notificationTimer);
+  notificationTimer = null;
+  trackedNotification = key;
+  if (!type) return;
+  notificationTimer = window.setTimeout(() => {
+    notificationTimer = null;
+    if (trackedNotification !== key) return;
+    if (type === 'failure' && failure === message) failure = '';
+    if (type === 'notice' && notice === message) notice = '';
+    trackedNotification = '';
+    render();
+  }, type === 'failure' ? FAILURE_DISPLAY_MS : NOTICE_DISPLAY_MS);
+}
+
+function dismissNotification(): void {
+  notice = '';
+  failure = '';
+  if (notificationTimer !== null) window.clearTimeout(notificationTimer);
+  notificationTimer = null;
+  trackedNotification = '';
+  render();
 }
 
 function headerMarkup(): string {
@@ -220,10 +431,12 @@ function footerMarkup(): string {
 
 function render(): void {
   if (!app) return;
+  persistRecovery();
   const body = screen === 'home' ? renderHome() :
     screen === 'guest-setup' ? renderGuestSetup() :
       screen === 'host' ? renderHost() : renderGuest();
   app.innerHTML = `${headerMarkup()}${noticeMarkup()}${body}${footerMarkup()}`;
+  syncNotificationTimer();
 }
 
 function renderHome(): string {
@@ -236,6 +449,7 @@ function renderHome(): string {
         <button class="button button-primary" data-action="show-host-form" type="button">Host a game <span aria-hidden="true">↗</span></button>
         <button class="button button-secondary" data-action="show-guest" type="button">Join a game</button>
       </div>
+      ${recoveryOptionsMarkup()}
       <p class="quiet-note">2–5 players · 15–20 min · no app to install</p>
     </div>
     <div class="hero-art" aria-hidden="true">
@@ -262,6 +476,21 @@ function renderHome(): string {
 `;
 }
 
+function recoveryOptionsMarkup(): string {
+  const options = [
+    hostRecoveryAvailable
+      ? `<div><strong>Saved host room · ${escapeHtml(formatRoomCode(hostRecoveryAvailable.roomCode))}</strong><button class="button button-secondary button-full" data-action="resume-host" type="button">Resume host room</button><button class="text-button" data-action="discard-host-recovery" type="button">Discard saved host room</button></div>`
+      : '',
+    guestRecoveryAvailable
+      ? `<div><strong>Saved guest game · ${escapeHtml(formatRoomCode(guestRecoveryAvailable.roomCode))}</strong><button class="button button-secondary button-full" data-action="resume-guest" type="button">Rejoin as ${escapeHtml(guestRecoveryAvailable.playerName)}</button><button class="text-button" data-action="discard-guest-recovery" type="button">Discard saved guest game</button></div>`
+      : '',
+    recoveryReadError
+      ? `<div><strong>Saved game recovery data is unavailable.</strong><button class="text-button" data-action="discard-recovery" type="button">Clear saved recovery data</button></div>`
+      : '',
+  ].filter(Boolean);
+  return options.length ? `<div class="recovery-options" aria-label="Saved games">${options.join('')}</div>` : '';
+}
+
 function renderGuestSetup(): string {
   return `<section class="narrow-panel">
     <button class="back-link" data-action="home" type="button">← Back</button>
@@ -274,7 +503,7 @@ function renderGuestSetup(): string {
       <input id="guest-room-code" class="room-code-input" name="roomCode" maxlength="11" required autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="e.g. 7K2M-Q9RX" />
       <button class="button button-primary button-full" type="submit">Join room</button>
     </form>
-    <p class="quiet-note">The host must keep their room open. Codes are case-insensitive.</p>
+    <p class="quiet-note">The host page must be open for play. If disconnected, the host restores the room first, then guests can rejoin. Codes are case-insensitive.</p>
   </section>`;
 }
 
@@ -289,10 +518,11 @@ function renderHost(): string {
       <p class="eyebrow">ROOM CODE</p>
       ${hostRoomCode
         ? `<input id="host-room-code" class="room-code-input" readonly value="${formatRoomCode(hostRoomCode)}" aria-label="Room code" />
-          <button class="button button-secondary button-full copy-code-button" data-action="copy-room-code" type="button">Copy room code</button>`
+          <button class="button button-secondary button-full copy-code-button" data-action="copy-room-code" type="button">Copy room code</button>
+          ${!hostPeer && !creatingRoomCode ? '<button class="button button-secondary button-full" data-action="retry-host-room" type="button">Reconnect saved room</button>' : ''}`
         : `<p class="quiet-note">${creatingRoomCode ? 'Getting a room code…' : 'Could not connect to the room service.'}</p>
           ${creatingRoomCode ? '' : '<button class="button button-secondary" data-action="retry-room-code" type="button">Try again</button>'}`}
-      <p class="quiet-note">Share it only with players in your game. The host page must stay open.</p>
+      <p class="quiet-note">Share it only with players in your game. Keep this page open during play; you can resume the saved room if interrupted.</p>
     </div>
     <div class="target-setting-card">
       <label for="target-points">Points needed to win</label>
@@ -306,10 +536,10 @@ function renderHost(): string {
     </div>
     <div class="pair-area">
       ${connectedPlayers(state).length >= MIN_PLAYERS
-        ? `<button class="button button-primary button-full start-button" data-action="start-game" type="button" ${creatingRoomCode || !hostRoomCode ? 'disabled' : ''}>Start game <span aria-hidden="true">→</span></button>`
+        ? `<button class="button button-primary button-full start-button" data-action="start-game" type="button" ${creatingRoomCode || !hostRoomCode || !hostPeer ? 'disabled' : ''}>Start game <span aria-hidden="true">→</span></button>`
         : `<p class="quiet-note">Waiting for at least one guest. The host counts as a player.</p>`}
     </div>
-    <details class="help-details"><summary>Connection notes</summary><p>Joining uses the PeerJS Cloud signaling service to find the room; gameplay uses a direct encrypted browser connection when the network allows it. Internet access is required for signaling. The room code is an invite—share it privately. iPhone may suspend a background tab, so keep the host page open in front.</p></details>
+    <details class="help-details"><summary>Connection notes</summary>    <p>Joining uses the PeerJS Cloud signaling service to find the room; gameplay uses a direct encrypted browser connection when the network allows it. Internet access is required for signaling. The room code is an invite—share it privately. iPhone may suspend a background tab, so keep the host page open in front. If the page closes, restore the host room before guests reconnect.</p></details>
   </section>`;
 }
 
@@ -318,6 +548,7 @@ function renderGuest(): string {
     return `<section class="narrow-panel">
       <p class="eyebrow">GUEST CONNECTION</p><h1>Joining the<br /><em>skyline.</em></h1>
       <p class="lead-small">Connecting to the host. Keep this page open; the lobby will appear when the connection is ready.</p>
+      ${guestResumeToken && !guestConnecting ? '<button class="button button-primary" data-action="retry-guest" type="button">Reconnect to saved game</button>' : ''}
       <button class="button button-secondary" data-action="cancel-guest" type="button">Leave</button>
     </section>`;
   }
@@ -327,10 +558,14 @@ function renderGuest(): string {
       <p class="lead-small">Win target: <strong>${guestState.targetPoints} points</strong></p>
       <div class="player-list">${guestState.players.map((player) => playerMarkup(player, false)).join('')}</div>
       <p class="lead-small">The host will start the game when everyone is ready. Keep this page open.</p>
+      ${!guestChannel?.open && guestResumeToken ? '<section class="resolution-card"><p class="lead-small">Connection to the host was lost. Your saved player identity is ready to reconnect.</p><button class="button button-primary" data-action="retry-guest" type="button">Reconnect to game</button></section>' : ''}
       <button class="button button-secondary" data-action="cancel-guest" type="button">Leave game</button>
     </section>`;
   }
-  return renderGame(guestState, false);
+  const reconnect = !guestChannel?.open && guestResumeToken
+    ? '<section class="resolution-card"><p class="lead-small">Connection to the host was lost. Your saved player identity is ready to reconnect.</p><button class="button button-primary" data-action="retry-guest" type="button">Reconnect to game</button></section>'
+    : '';
+  return `${renderGame(guestState, false)}${reconnect}`;
 }
 
 function playerMarkup(player: Player, hostControls: boolean): string {
@@ -366,13 +601,18 @@ function renderGame(state: MatchState, isHost: boolean): string {
   const toppleAnimation = state.dice !== null && latestRound?.toppled.length
     ? `<div class="topple-animation" role="status" aria-live="polite"><span class="falling-tower" aria-hidden="true">▥</span><strong>The wind toppled ${latestRound.toppled.length} tower${latestRound.toppled.length === 1 ? '' : 's'}!</strong><span>${latestRound.toppled.map((item) => escapeHtml(state.players.find((player) => player.id === item.playerId)?.name ?? 'A player')).join(', ')}</span></div>`
     : '';
+  const reconnectHost = isHost && hostRoomCode && !hostPeer && !creatingRoomCode
+    ? '<section class="resolution-card"><p class="lead-small">The room is not connected to the signaling service.</p><button class="button button-primary" data-action="retry-host-room" type="button">Reconnect saved room</button></section>'
+    : '';
 
   return `<section class="game-panel board-panel">
     <div class="section-heading"><div><p class="eyebrow">${state.status === 'finished' ? 'GAME OVER' : `ROUND ${state.round} · PLAYER ${state.currentPlayerIndex + 1}/${state.players.length}`}</p><h1>${state.status === 'finished' ? 'The skyline is <em>set.</em>' : `${escapeHtml(activePlayer?.name ?? 'Next player')}'s <em>turn.</em>`}</h1></div>
       ${state.dice ? `<div class="wind-card"><span>ROUND ${latestRound?.round ?? state.round} WIND</span><div class="dice-pair">${dieMarkup(state.dice[0])}${dieMarkup(state.dice[1])}</div><strong>${state.dice[0] + state.dice[1]}</strong><small>shared wind</small></div>` : ''}
     </div>
     ${state.status === 'choice' ? `<p class="lead-small">Reach ${state.targetPoints} points to win. Choose banking or building first. Building rolls one die; banking does not.</p>` : ''}
+    ${reconnectHost}
     ${state.status === 'choice' && state.turnMode === 'build' && state.turnDie !== null ? `<div class="turn-roll-card" aria-live="polite"><span class="eyebrow">${escapeHtml(activePlayer?.name ?? 'Player')} rolled</span><div class="turn-die">${dieMarkup(state.turnDie)}</div><strong>${state.turnDie} floor${state.turnDie === 1 ? '' : 's'} available</strong></div>` : ''}
+    ${choices}
     ${toppleAnimation}
     ${me ? towerBoardMarkup(me, state, canChoose, selectedTurnMode) : ''}
     <section class="scoreboard" aria-label="Players and scores">
@@ -384,7 +624,6 @@ function renderGame(state: MatchState, isHost: boolean): string {
         ${isHost && player.id !== hostId && !player.connected ? `<button class="text-button danger-text" data-action="remove-player" data-player="${escapeHtml(player.id)}" type="button">Remove disconnected player</button>` : ''}
       </article>`).join('')}
     </section>
-    ${choices}
     ${state.status === 'resolution' ? `<section class="resolution-card"><p class="eyebrow">${state.dice ? `ROUND ${state.round} COMPLETE` : `PLAYER ${state.currentPlayerIndex + 1} COMPLETE`}</p><h2>${state.dice ? 'The shared wind has passed.' : 'The wind waits.'}</h2>${state.dice && latestRound ? fallSummaryMarkup(latestRound, state, playerId) : ''}
       <p class="quiet-note">${state.dice ? 'The next round starts automatically in 5 seconds.' : 'Every player takes one turn before the shared wind is rolled. The next turn starts in 3 seconds.'}</p></section>` : ''}
     ${state.status === 'finished' ? `<section class="resolution-card winner-card"><p class="eyebrow">FINAL STANDINGS · TARGET ${state.targetPoints}</p><h2>${state.winnerIds.length > 1 ? 'A shared victory.' : `${escapeHtml(state.players.find((player) => player.id === state.winnerIds[0])?.name ?? 'A player')} wins!`}</h2><p>${state.winnerIds.length > 1 ? 'The tied winners each earn one room win.' : 'The winner earns one room win.'}</p>${isHost
@@ -506,7 +745,7 @@ function towerBoardMarkup(
   const commitLabel = banking && selectedBank
     ? `Bank tower for +${towerPoints(selectedBank.height)} points`
     : 'Place floors and face the wind';
-  return `<section class="tower-board-panel" aria-label="Your towers">
+  return `<section class="tower-board-panel ${building ? 'tower-board-building' : ''}" aria-label="Your towers">
     <div class="tower-board-heading"><div><p class="eyebrow">YOUR SKYLINE</p><h2>Your towers</h2></div><span>${player.towers.length + pendingTowerCount}/${MAX_TOWERS} towers · ${player.bankedTowers} banked</span></div>
     <div class="tower-board">${towerSlots}</div>
     <div class="wind-scale-legend" aria-label="Wind scale legend"><span><i class="wind-mark wind-mark-safe"></i>Safe</span><span><i class="wind-mark wind-mark-danger"></i>Topples</span><span class="wind-scale-range">2 ↑ 12</span></div>
@@ -578,12 +817,40 @@ async function copyCode(selector: string, successMessage: string): Promise<void>
 
 function messageForConnection(connection: HostConnection, message: PeerMessage): void {
   if (message.type === 'join') {
-    if (hostState?.status !== 'lobby') {
-      connection.channel.send(JSON.stringify({ type: 'error', message: 'This room has already started.' }));
+    if (!hostState) {
+      connection.channel.send(JSON.stringify({ type: 'error', message: 'This room is no longer available.' }));
       return;
     }
     if (message.name.trim().length < 1 || message.name.length > 18 || message.playerId.length > 64) {
       connection.channel.send(JSON.stringify({ type: 'error', message: 'Please choose a name with 1–18 characters.' }));
+      return;
+    }
+    if (message.resumeToken) {
+      const player = hostState.players.find((item) => item.id === message.playerId && !item.isBot);
+      if (
+        !player ||
+        player.name !== message.name.trim() ||
+        hostResumeTokens.get(message.playerId) !== message.resumeToken
+      ) {
+        connection.channel.send(JSON.stringify({ type: 'error', message: 'This saved player cannot rejoin this room.' }));
+        return;
+      }
+      connection.playerId = message.playerId;
+      for (const previousConnection of hostConnections) {
+        if (previousConnection !== connection && previousConnection.playerId === message.playerId) {
+          hostConnections.delete(previousConnection);
+          previousConnection.channel.close();
+        }
+      }
+      player.connected = true;
+      notice = `${player.name} rejoined the room.`;
+      failure = '';
+      broadcastState();
+      render();
+      return;
+    }
+    if (hostState.status !== 'lobby') {
+      connection.channel.send(JSON.stringify({ type: 'error', message: 'This room has already started.' }));
       return;
     }
     if (hostState.players.some((player) => player.id === message.playerId)) {
@@ -604,6 +871,7 @@ function messageForConnection(connection: HostConnection, message: PeerMessage):
       towers: [],
       connected: true,
     });
+    hostResumeTokens.set(message.playerId, randomId());
     notice = `${message.name.trim()} joined the room.`;
     failure = '';
     broadcastState();
@@ -665,15 +933,17 @@ function attachHostConnection(connection: HostConnection): void {
     }
   });
   connection.channel.on('open', () => {
-    notice = 'Connection ready. The guest can join the lobby now.';
+    notice = 'A guest connection is ready.';
     render();
   });
   connection.channel.on('close', () => {
     hostConnections.delete(connection);
     const playerId = connection.playerId;
     if (!playerId || !hostState) return;
+    if (Array.from(hostConnections).some((item) => item.playerId === playerId && item.channel.open)) return;
     const player = hostState.players.find((item) => item.id === playerId);
-    if (player) player.connected = false;
+    if (!player) return;
+    player.connected = false;
     notice = `${player?.name ?? 'A guest'} disconnected. Remove them to continue.`;
     broadcastState();
     render();
@@ -693,6 +963,10 @@ function broadcastState(): void {
         state: createPlayerView(hostState, connection.playerId),
         submittedCount,
         playerId: connection.playerId,
+        ...(hostResumeTokens.has(connection.playerId)
+          ? { resumeToken: hostResumeTokens.get(connection.playerId)! }
+          : {}),
+        isSubmitted: submitted.has(connection.playerId),
       }));
     }
   }
@@ -843,17 +1117,18 @@ function broadcastGuestStatus(): void {
   render();
 }
 
-async function createHostPeer(): Promise<void> {
+async function createHostPeer(requestedRoomCode?: string): Promise<void> {
   if (!hostState || creatingRoomCode) return;
   creatingRoomCode = true;
   hostPeer?.destroy();
   hostPeer = null;
-  hostRoomCode = '';
+  hostRoomCode = requestedRoomCode ?? '';
   const generation = roomGeneration;
   render();
   try {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const code = createRoomCode();
+    const attempts = requestedRoomCode ? 15 : 5;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const code = requestedRoomCode ?? createRoomCode();
       const peer = new Peer(code, PEER_OPTIONS);
       hostPeer = peer;
       try {
@@ -862,7 +1137,12 @@ async function createHostPeer(): Promise<void> {
         peer.destroy();
         if (hostPeer === peer) hostPeer = null;
         if (generation !== roomGeneration) return;
-        if (error instanceof PeerError && error.type === PeerErrorType.UnavailableID) continue;
+        if (error instanceof PeerError && error.type === PeerErrorType.UnavailableID) {
+          if (requestedRoomCode && attempt < attempts - 1) {
+            await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+          }
+          continue;
+        }
         throw error;
       }
       if (generation !== roomGeneration) {
@@ -872,12 +1152,7 @@ async function createHostPeer(): Promise<void> {
       }
       hostRoomCode = code;
       peer.on('connection', (channel) => {
-        if (
-          hostPeer !== peer ||
-          !hostState ||
-          hostState.status !== 'lobby' ||
-          connectedPlayers(hostState).length >= MAX_PLAYERS
-        ) {
+        if (hostPeer !== peer || !hostState) {
           channel.close();
           return;
         }
@@ -890,19 +1165,31 @@ async function createHostPeer(): Promise<void> {
       });
       peer.on('disconnected', () => {
         if (hostPeer === peer) {
-          showFailure('The room service connection was lost. Existing players may stay connected, but new guests cannot join.');
+          showFailure('The room service connection was lost. Reconnecting the room service now.');
+          peer.reconnect();
         }
       });
-      notice = 'Room ready. Share the code with your guests.';
+      notice = requestedRoomCode ? 'Saved room restored. Guests can reconnect now.' : 'Room ready. Share the code with your guests.';
       failure = '';
+      if (requestedRoomCode) {
+        broadcastState();
+        if (hostState.status === 'resolution') {
+          scheduleAutomaticNextRound();
+        } else if (hostState.status === 'choice') {
+          submitBotActions();
+          maybeResolveRound();
+        }
+      }
       return;
     }
-    throw new Error('Could not reserve a unique room code. Try again.');
+    throw new Error(requestedRoomCode
+      ? 'The saved room code is still in use. Wait a little and try resuming again.'
+      : 'Could not reserve a unique room code. Try again.');
   } catch (error) {
     if (generation === roomGeneration) {
       hostPeer?.destroy();
       hostPeer = null;
-      hostRoomCode = '';
+      if (!requestedRoomCode) hostRoomCode = '';
       showFailure(peerFailureMessage(error, 'host'));
     }
   } finally {
@@ -913,16 +1200,20 @@ async function createHostPeer(): Promise<void> {
   }
 }
 
-function connectGuest(roomCode: string): void {
+function connectGuest(roomCode: string, recovery?: GuestRecoveryRecord): void {
   const peer = new Peer(PEER_OPTIONS);
   guestPeer = peer;
   guestState = null;
+  guestConnecting = true;
   guestSubmitted = false;
   selectedAllocations.clear();
   selectedBankTowerId = null;
   selectedTurnMode = null;
   guestBuildRequested = false;
-  guestId = randomId();
+  guestRoomCode = roomCode;
+  guestId = recovery?.playerId ?? randomId();
+  guestResumeToken = recovery?.resumeToken ?? '';
+  if (recovery) guestName = recovery.playerName;
   screen = 'guest';
   notice = 'Connecting to the room…';
   failure = '';
@@ -930,10 +1221,16 @@ function connectGuest(roomCode: string): void {
   void waitForPeerOpen(peer).then(() => {
     if (guestPeer !== peer) return;
     peer.on('error', (error) => {
-      if (guestPeer === peer) showFailure(peerFailureMessage(error, 'guest'));
+      if (guestPeer === peer) {
+        guestConnecting = false;
+        showFailure(peerFailureMessage(error, 'guest'));
+      }
     });
     peer.on('disconnected', () => {
-      if (guestPeer === peer) showFailure('The room service connection was lost. Leave and try joining again.');
+      if (guestPeer === peer) {
+        showFailure('The room service connection was lost. Reconnecting the room service now.');
+        peer.reconnect();
+      }
     });
     const channel = peer.connect(roomCode, { serialization: 'binary' });
     guestChannel = channel;
@@ -945,7 +1242,12 @@ function connectGuest(roomCode: string): void {
     }, 20_000);
     channel.on('open', () => {
       window.clearTimeout(timeout);
-      channel.send(JSON.stringify({ type: 'join', playerId: guestId, name: guestName }));
+      channel.send(JSON.stringify({
+        type: 'join',
+        playerId: guestId,
+        name: guestName,
+        ...(guestResumeToken ? { resumeToken: guestResumeToken } : {}),
+      }));
       notice = 'Connected to the host. Joining the lobby…';
       render();
     });
@@ -954,6 +1256,7 @@ function connectGuest(roomCode: string): void {
         if (typeof data !== 'string') throw new Error('Received an invalid game message.');
         const message = parseMessage(data);
         if (message.type === 'state' && message.playerId === guestId) {
+          guestConnecting = false;
           const previousRound = guestState?.round;
           const previousTurnMode = guestState?.turnMode;
           const previousPlayerIndex = guestState?.currentPlayerIndex;
@@ -971,11 +1274,14 @@ function connectGuest(roomCode: string): void {
             selectedTurnMode = null;
             guestBuildRequested = false;
           }
+          guestSubmitted = message.isSubmitted ?? guestSubmitted;
+          if (message.resumeToken) guestResumeToken = message.resumeToken;
           failure = '';
           notice = '';
           screen = 'guest';
           render();
         } else if (message.type === 'error') {
+          guestConnecting = false;
           guestBuildRequested = false;
           showFailure(message.message);
         }
@@ -986,16 +1292,21 @@ function connectGuest(roomCode: string): void {
     channel.on('close', () => {
       window.clearTimeout(timeout);
       if (guestPeer !== peer) return;
+      guestConnecting = false;
       showFailure(guestState
-        ? 'The host connection closed. The match cannot be recovered if the host page was closed.'
+        ? 'The host connection closed. If the host restores the room, you can reconnect from this device.'
         : 'The connection closed before joining. Check the room code and try again.');
     });
     channel.on('error', (error) => {
       window.clearTimeout(timeout);
-      if (guestPeer === peer) showFailure(peerFailureMessage(error, 'guest'));
+      if (guestPeer === peer) {
+        guestConnecting = false;
+        showFailure(peerFailureMessage(error, 'guest'));
+      }
     });
   }).catch((error: unknown) => {
     if (guestPeer !== peer) return;
+    guestConnecting = false;
     peer.destroy();
     guestPeer = null;
     guestChannel = null;
@@ -1003,10 +1314,69 @@ function connectGuest(roomCode: string): void {
   });
 }
 
+function retryGuestRoom(): void {
+  if (!guestRoomCode || !guestId || !guestResumeToken) {
+    throw new Error('There is no saved guest identity to reconnect.');
+  }
+  const recovery: GuestRecoveryRecord = {
+    version: 1,
+    roomCode: guestRoomCode,
+    playerId: guestId,
+    playerName: guestName,
+    resumeToken: guestResumeToken,
+  };
+  const previousPeer = guestPeer;
+  guestPeer = null;
+  guestChannel = null;
+  previousPeer?.destroy();
+  connectGuest(guestRoomCode, recovery);
+}
+
+async function resumeHostRoom(): Promise<void> {
+  const recovery = hostRecoveryAvailable;
+  if (!recovery) throw new Error('There is no saved host room to resume.');
+  if (autoRollTimer !== null) window.clearTimeout(autoRollTimer);
+  if (botResolveTimer !== null) window.clearTimeout(botResolveTimer);
+  autoRollTimer = null;
+  botResolveTimer = null;
+  hostId = recovery.hostId;
+  playerName = recovery.playerName;
+  hostState = recovery.state;
+  hostRoomCode = recovery.roomCode;
+  submitted = new Map(recovery.submitted);
+  submittedCount = submitted.size;
+  hostResumeTokens = new Map(Object.entries(recovery.resumeTokens));
+  for (const player of hostState.players) {
+    player.connected = player.id === hostId || player.isBot === true;
+  }
+  guestState = null;
+  screen = 'host';
+  hostRecoveryAvailable = null;
+  notice = 'Restoring your saved room…';
+  failure = '';
+  await createHostPeer(recovery.roomCode);
+}
+
+function discardRecovery(role: 'host' | 'guest' | 'all'): void {
+  const keys = role === 'all'
+    ? [HOST_RECOVERY_KEY, GUEST_RECOVERY_KEY]
+    : [role === 'host' ? HOST_RECOVERY_KEY : GUEST_RECOVERY_KEY];
+  try {
+    for (const key of keys) window.localStorage.removeItem(key);
+  } catch (error) {
+    throw new Error(`Could not clear saved recovery data. ${error instanceof Error ? error.message : ''}`.trim());
+  }
+  if (role === 'host' || role === 'all') hostRecoveryAvailable = null;
+  if (role === 'guest' || role === 'all') guestRecoveryAvailable = null;
+  if (role === 'all') recoveryReadError = false;
+  showNotice('Saved game recovery data cleared.');
+}
+
 function removePlayer(playerId: string): void {
   if (!hostState || playerId === hostId) return;
   const player = hostState.players.find((item) => item.id === playerId);
   if (!player) return;
+  hostResumeTokens.delete(playerId);
   const removedIndex = hostState.players.findIndex((item) => item.id === playerId);
   const wasActive = hostState.status === 'choice' && removedIndex === hostState.currentPlayerIndex;
   hostState.players = hostState.players.filter((item) => item.id !== playerId);
@@ -1069,6 +1439,7 @@ function removeRobot(playerId: string): void {
 }
 
 function resetRoom(): void {
+  const recoveryRole = screen === 'host' ? 'host' : screen === 'guest' ? 'guest' : null;
   if (autoRollTimer !== null) window.clearTimeout(autoRollTimer);
   if (botResolveTimer !== null) window.clearTimeout(botResolveTimer);
   autoRollTimer = null;
@@ -1082,9 +1453,13 @@ function resetRoom(): void {
   hostPeer?.destroy();
   hostPeer = null;
   hostRoomCode = '';
+  hostResumeTokens.clear();
   guestPeer?.destroy();
   guestPeer = null;
   guestChannel = null;
+  guestConnecting = false;
+  guestRoomCode = '';
+  guestResumeToken = '';
   submitted.clear();
   submittedCount = 0;
   guestSubmitted = false;
@@ -1093,6 +1468,15 @@ function resetRoom(): void {
   screen = 'home';
   notice = '';
   failure = '';
+  if (recoveryRole) {
+    if (recoveryRole === 'host') hostRecoveryAvailable = null;
+    else guestRecoveryAvailable = null;
+    try {
+      window.localStorage.removeItem(recoveryRole === 'host' ? HOST_RECOVERY_KEY : GUEST_RECOVERY_KEY);
+    } catch (error) {
+      failure = `Could not clear saved recovery data. ${error instanceof Error ? error.message : ''}`.trim();
+    }
+  }
   render();
 }
 
@@ -1118,7 +1502,9 @@ app.addEventListener('click', async (event) => {
   if (!button) return;
   const action = button.dataset.action;
   try {
-    if (action === 'home') {
+    if (action === 'dismiss-notice') {
+      dismissNotification();
+    } else if (action === 'home') {
       if (screen === 'host' || screen === 'guest') {
         const leave = window.confirm('Leave this room? The active match will end for this device.');
         if (!leave) return;
@@ -1136,10 +1522,27 @@ app.addEventListener('click', async (event) => {
     } else if (action === 'show-guest') {
       screen = 'guest-setup';
       render();
+    } else if (action === 'resume-host') {
+      await resumeHostRoom();
+    } else if (action === 'resume-guest') {
+      const recovery = guestRecoveryAvailable;
+      if (!recovery) throw new Error('There is no saved guest game to rejoin.');
+      connectGuest(recovery.roomCode, recovery);
+    } else if (action === 'discard-host-recovery') {
+      discardRecovery('host');
+    } else if (action === 'discard-guest-recovery') {
+      discardRecovery('guest');
+    } else if (action === 'discard-recovery') {
+      discardRecovery('all');
     } else if (action === 'copy-room-code') {
       await copyCode('#host-room-code', 'Room code copied.');
     } else if (action === 'retry-room-code') {
       await createHostPeer();
+    } else if (action === 'retry-host-room') {
+      if (!hostRoomCode) throw new Error('There is no saved room code to reconnect.');
+      await createHostPeer(hostRoomCode);
+    } else if (action === 'retry-guest') {
+      retryGuestRoom();
     } else if (action === 'add-robot') {
       addRobot();
     } else if (action === 'remove-robot' && button.dataset.player) {
@@ -1238,6 +1641,7 @@ app.addEventListener('click', async (event) => {
       const peer = guestPeer;
       guestPeer = null;
       guestChannel = null;
+      guestConnecting = false;
       guestState = null;
       guestSubmitted = false;
       selectedAllocations.clear();
@@ -1246,10 +1650,18 @@ app.addEventListener('click', async (event) => {
       guestBuildRequested = false;
       screen = 'home';
       notice = '';
+      guestRoomCode = '';
+      guestResumeToken = '';
+      guestRecoveryAvailable = null;
       peer?.destroy();
+      try {
+        window.localStorage.removeItem(GUEST_RECOVERY_KEY);
+      } catch (error) {
+        throw new Error(`Could not clear saved guest recovery data. ${error instanceof Error ? error.message : ''}`.trim());
+      }
       render();
     } else if (action === 'rules') {
-      window.alert(`Players take turns. First choose to build or bank. Building rolls one die; click towers to add floors or a dotted slot to start one new tower in that position. Use the Undo one button to take a floor back; you can have up to seven standing towers. Banking scores one tower for 1 + 2 + … + height points and does not roll a die. After everyone has taken a turn, the shared two-die wind tests all standing towers. Every tower beyond your first adds +1 wind protection to all your towers, up to +3. First to the target wins.`);
+      window.alert(`Players take turns. First choose to build or bank. Building rolls one die; click towers to add floors or a dotted slot to start one new tower in that position. Use the Undo one button to take a floor back; you can have up to ${MAX_TOWERS} standing towers. Banking scores one tower for 1 + 2 + … + height points and does not roll a die. After everyone has taken a turn, the shared two-die wind tests all standing towers. Every tower beyond your first adds +1 wind protection to all your towers, up to +3. First to the target wins.`);
     }
   } catch (error) {
     showFailure(error instanceof Error ? error.message : 'That action could not be completed.');
@@ -1266,6 +1678,7 @@ app.addEventListener('submit', async (event) => {
       playerName = String(data.get('name') ?? '').trim();
       if (!playerName || playerName.length > 18) throw new Error('Enter a name with 1–18 characters.');
       hostId = randomId();
+      hostResumeTokens.clear();
       hostState = createMatch({
         id: hostId,
         name: playerName,
@@ -1292,4 +1705,7 @@ app.addEventListener('submit', async (event) => {
   }
 });
 
+hostRecoveryAvailable = loadRecoveryRecord(HOST_RECOVERY_KEY, parseHostRecovery);
+guestRecoveryAvailable = loadRecoveryRecord(GUEST_RECOVERY_KEY, parseGuestRecovery);
+window.addEventListener('pagehide', persistRecovery);
 render();

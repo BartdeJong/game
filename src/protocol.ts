@@ -4,13 +4,13 @@ import {
   MIN_WIN_POINTS,
   type MatchState,
   type PlayerAction,
-} from './game';
+} from './game.js';
 
 export type PeerMessage =
-  | { type: 'join'; playerId: string; name: string }
+  | { type: 'join'; playerId: string; name: string; resumeToken?: string }
   | { type: 'build'; playerId: string }
   | { type: 'action'; playerId: string; action: PlayerAction }
-  | { type: 'state'; state: MatchState; submittedCount: number; playerId: string }
+  | { type: 'state'; state: MatchState; submittedCount: number; playerId: string; resumeToken?: string; isSubmitted?: boolean }
   | { type: 'error'; message: string };
 
 export function parseMessage(data: string): PeerMessage {
@@ -26,23 +26,36 @@ export function parseMessage(data: string): PeerMessage {
     isMatchState(value.state) &&
     typeof value.submittedCount === 'number' &&
     value.submittedCount >= 0 &&
-    typeof value.playerId === 'string'
+    typeof value.playerId === 'string' &&
+    (!('resumeToken' in value) || typeof value.resumeToken === 'string') &&
+    (!('isSubmitted' in value) || typeof value.isSubmitted === 'boolean')
   ) {
     return {
       type: 'state',
       state: value.state,
       submittedCount: value.submittedCount,
       playerId: value.playerId,
+      ...('resumeToken' in value && typeof value.resumeToken === 'string' ? { resumeToken: value.resumeToken } : {}),
+      ...('isSubmitted' in value && typeof value.isSubmitted === 'boolean' ? { isSubmitted: value.isSubmitted } : {}),
     };
   }
   if (value.type === 'error' && 'message' in value && typeof value.message === 'string') {
     return { type: 'error', message: value.message };
   }
   if (value.type === 'join' && 'playerId' in value && 'name' in value) {
-    if (typeof value.playerId !== 'string' || typeof value.name !== 'string') {
+    if (
+      typeof value.playerId !== 'string' ||
+      typeof value.name !== 'string' ||
+      ('resumeToken' in value && typeof value.resumeToken !== 'string')
+    ) {
       throw new Error('Received an invalid join request.');
     }
-    return { type: 'join', playerId: value.playerId, name: value.name };
+    return {
+      type: 'join',
+      playerId: value.playerId,
+      name: value.name,
+      ...('resumeToken' in value && typeof value.resumeToken === 'string' ? { resumeToken: value.resumeToken } : {}),
+    };
   }
   if (value.type === 'build' && 'playerId' in value && typeof value.playerId === 'string') {
     return { type: 'build', playerId: value.playerId };

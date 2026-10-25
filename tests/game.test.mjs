@@ -21,6 +21,7 @@ import {
   formatRoomCode,
   normalizeRoomCode,
 } from '../.test-build/src/room-code.js';
+import { parseMessage } from '../.test-build/src/protocol.js';
 
 function player(id, overrides = {}) {
   return {
@@ -123,23 +124,28 @@ test('builds can distribute one rolled die across multiple towers', () => {
   assert.equal(result.history[0].actions[0].description, 'added 6 floors');
 });
 
-test('limits standing towers to seven', () => {
-  const sixTowers = Array.from({ length: 6 }, (_, index) => ({ id: `a${index}`, height: 1 }));
+test('limits standing towers to six', () => {
+  const fiveTowers = Array.from({ length: 5 }, (_, index) => ({ id: `a${index}`, height: 1 }));
   const building = beginBuildingTurn(activeState([
-    player('a', { towers: sixTowers }),
+    player('a', { towers: fiveTowers }),
     player('b'),
   ]), 3);
   assert.equal(isLegalAction(building.players[0], buildAction([
     { towerId: null, elements: 1 },
   ]), building.turnMode, building.turnDie), true);
-  assert.equal(isLegalAction(building.players[0], buildAction([
-    { towerId: null, elements: 1 },
-    { towerId: null, elements: 1 },
-  ]), building.turnMode, building.turnDie), false);
+  const fourTowers = fiveTowers.slice(0, 4);
+  const twoNewTowerTurn = beginBuildingTurn(activeState([
+    player('a', { towers: fourTowers }),
+    player('b'),
+  ]), 2);
+  assert.equal(isLegalAction(twoNewTowerTurn.players[0], buildAction([
+    { towerId: null, elements: 1, slot: 4 },
+    { towerId: null, elements: 1, slot: 5 },
+  ]), twoNewTowerTurn.turnMode, twoNewTowerTurn.turnDie), false);
 
-  const sevenTowers = [...sixTowers, { id: 'a6', height: 1 }];
+  const sixTowers = [...fiveTowers, { id: 'a5', height: 1 }];
   const full = beginBuildingTurn(activeState([
-    player('a', { towers: sevenTowers }),
+    player('a', { towers: sixTowers }),
     player('b'),
   ]), 3);
   assert.equal(isLegalAction(full.players[0], buildAction([
@@ -297,4 +303,20 @@ test('player views hide opponents towers but preserve public wind-topple data', 
   assert.deepEqual(view.players.find((item) => item.id === 'b').towers, []);
   assert.deepEqual(view.history[0].toppled.map((item) => item.playerId), ['a', 'b']);
   assert.deepEqual(view.history[0].fallenCounts, { a: 1, b: 1 });
+});
+
+test('protocol preserves per-player recovery credentials and submission state', () => {
+  const join = { type: 'join', playerId: 'guest', name: 'Guest', resumeToken: 'secret-token' };
+  assert.deepEqual(parseMessage(JSON.stringify(join)), join);
+
+  const state = createMatch(player('host'));
+  const update = {
+    type: 'state',
+    state,
+    submittedCount: 1,
+    playerId: 'guest',
+    resumeToken: 'secret-token',
+    isSubmitted: true,
+  };
+  assert.deepEqual(parseMessage(JSON.stringify(update)), update);
 });

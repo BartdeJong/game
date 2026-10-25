@@ -1,5 +1,5 @@
 export const MAX_PLAYERS = 5;
-export const MAX_TOWERS = 7;
+export const MAX_TOWERS = 6;
 export const MIN_PLAYERS = 2;
 export const DEFAULT_WIN_POINTS = 80;
 export const MIN_WIN_POINTS = 10;
