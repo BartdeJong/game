@@ -399,22 +399,24 @@ export function resolveRound(
     toppled: [],
   };
 
-  for (const item of players) {
-    const standing: Tower[] = [];
-    const shield = towerShield(item.towers.length);
-    for (const tower of item.towers) {
-      const limit = heightLimit(tower.height) + shield;
-      if (wind >= limit) {
-        resolution.toppled.push({ playerId: item.id, towerId: tower.id, height: tower.height, limit });
-        resolution.fallenCounts[item.id] = (resolution.fallenCounts[item.id] ?? 0) + 1;
-      } else {
-        standing.push(tower);
+  const gameEnded = players.some((item) => item.score >= state.targetPoints);
+  if (!gameEnded) {
+    for (const item of players) {
+      const standing: Tower[] = [];
+      const shield = towerShield(item.towers.length);
+      for (const tower of item.towers) {
+        const limit = heightLimit(tower.height) + shield;
+        if (wind >= limit) {
+          resolution.toppled.push({ playerId: item.id, towerId: tower.id, height: tower.height, limit });
+          resolution.fallenCounts[item.id] = (resolution.fallenCounts[item.id] ?? 0) + 1;
+        } else {
+          standing.push(tower);
+        }
       }
+      item.towers = standing;
     }
-    item.towers = standing;
   }
 
-  const gameEnded = players.some((item) => item.score >= state.targetPoints);
   const highScore = Math.max(...players.map((item) => item.score));
   const winnerIds = gameEnded
     ? players.filter((item) => item.score === highScore).map((item) => item.id)

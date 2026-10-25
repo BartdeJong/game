@@ -586,7 +586,7 @@ function playerMarkup(player: Player, hostControls: boolean): string {
   </article>`;
 }
 
-function roundRollBarMarkup(state: MatchState, readyCount: number): string {
+function roundRollBarMarkup(state: MatchState, readyCount: number, isHost: boolean): string {
   const latestRound = state.history.at(-1);
   const showRoundScores = state.status === 'resolution' || state.status === 'finished';
   return `<section class="round-roll-bar" aria-label="Player rolls and round scores">
@@ -605,8 +605,11 @@ function roundRollBarMarkup(state: MatchState, readyCount: number): string {
       const roundScore = pointsEarned === undefined
         ? ''
         : `<small class="round-roll-score" aria-label="${pointsEarned} points this round">${pointsEarned > 0 ? '+' : ''}${pointsEarned} pts</small>`;
+      const removePlayer = isHost && player.id !== hostId && !player.connected
+        ? `<button class="text-button danger-text" data-action="remove-player" data-player="${escapeHtml(player.id)}" type="button">Remove disconnected player</button>`
+        : '';
       return `<article class="round-roll-entry ${roll ? 'round-roll-ready' : ''}" title="${escapeHtml(player.name)}">
-        <strong>${escapeHtml(player.name)}</strong>${result}${score}${roundScore}
+        <strong>${escapeHtml(player.name)}${!player.connected ? ' · OFFLINE' : ''}</strong>${result}${score}${roundScore}${removePlayer}
       </article>`;
     }).join('')}</div>
   </section>`;
@@ -634,9 +637,11 @@ function renderGame(state: MatchState, isHost: boolean): string {
     ? `<div class="topple-animation" role="status" aria-live="polite">
         <span class="falling-tower" aria-hidden="true">▥</span>
         <strong>The wind toppled ${latestRound.toppled.length} tower${latestRound.toppled.length === 1 ? '' : 's'}!</strong>
-        <div class="topple-wind-result" role="img" aria-label="Shared wind: ${state.dice[0]} plus ${state.dice[1]} equals ${state.dice[0] + state.dice[1]}">
-          <span>WIND</span><div class="dice-pair">${dieMarkup(state.dice[0])}<b>+</b>${dieMarkup(state.dice[1])}</div><b>=</b><strong>${state.dice[0] + state.dice[1]}</strong>
-        </div>
+      </div>`
+    : '';
+  const windResult = state.dice !== null
+    ? `<div class="round-wind-result" role="img" aria-label="Shared wind: ${state.dice[0]} plus ${state.dice[1]} equals ${state.dice[0] + state.dice[1]}">
+        <span>WIND TOTAL</span><div class="dice-pair">${dieMarkup(state.dice[0])}<b>+</b>${dieMarkup(state.dice[1])}</div><b>=</b><strong>${state.dice[0] + state.dice[1]}</strong>
       </div>`
     : '';
   const reconnectHost = isHost && hostRoomCode && !hostPeer && !creatingRoomCode
@@ -653,6 +658,7 @@ function renderGame(state: MatchState, isHost: boolean): string {
     ? `<section class="round-result-banner round-result-round" role="status" aria-live="polite">
         <span class="round-result-mark" aria-hidden="true">✓</span>
         <div class="round-result-copy"><p class="eyebrow">ROUND ${state.round} COMPLETE</p><h2>The shared wind has passed.</h2><p>The next round starts automatically in ${ROUND_WIND_DISPLAY_MS / 1000} seconds.</p></div>
+        ${windResult}
         ${latestRound ? fallSummaryMarkup(latestRound, state, playerId) : ''}
       </section>`
     : state.status === 'finished'
@@ -663,6 +669,7 @@ function renderGame(state: MatchState, isHost: boolean): string {
             <div class="winner-result-list">${winners.map((winner) => `<span><strong>${escapeHtml(winner.name)}</strong><b>${winner.score} pts</b></span>`).join('')}</div>
             <p class="winner-reward">${winners.length > 1 ? 'Each winner earns one room win.' : 'The winner earns one room win.'}</p>
           </div>
+          ${windResult}
           ${latestRound ? fallSummaryMarkup(latestRound, state, playerId) : ''}
           ${isHost
             ? `<div class="rematch-actions"><button class="button button-primary button-full" data-action="rematch" type="button" ${state.players.length < MIN_PLAYERS || state.players.some((player) => !player.connected) ? 'disabled' : ''}>Play again in this room</button><button class="button button-secondary button-full" data-action="return-lobby" type="button">Return to room lobby</button></div>`
@@ -672,23 +679,14 @@ function renderGame(state: MatchState, isHost: boolean): string {
 
   return `<section class="game-panel board-panel">
     ${me ? towerBoardMarkup(me, state, canChoose, canBuild, selectedTurnMode, isSubmitted) : ''}
-    ${roundRollBarMarkup(state, rollCount)}
+    ${roundRollBarMarkup(state, rollCount, isHost)}
     <div class="section-heading"><div><p class="eyebrow">${state.status === 'finished' ? 'GAME OVER' : `ROUND ${state.round} · PARALLEL TURNS`}</p><h1>${state.status === 'finished' ? 'The skyline is <em>set.</em>' : state.status === 'resolution' ? 'The shared wind has <em>passed.</em>' : 'Everyone’s <em>turn.</em>'}</h1></div>
-      ${state.dice ? `<div class="wind-card"><span>ROUND ${latestRound?.round ?? state.round} WIND</span><div class="dice-pair">${dieMarkup(state.dice[0])}${dieMarkup(state.dice[1])}</div><strong>${state.dice[0] + state.dice[1]}</strong><small>shared wind</small></div>` : ''}
     </div>
     ${state.status === 'choice' ? `<p class="lead-small">Reach ${state.targetPoints} points to win. Choose to build or bank at the same time as the other players. Building rolls one die; banking does not.</p>` : ''}
     ${reconnectHost}
     ${choices}
     ${toppleAnimation}
     ${outcomeMarkup}
-    <section class="scoreboard" aria-label="Players and scores">
-      ${state.players.map((player) => `<article class="score-card ${player.id === playerId ? 'score-card-me' : ''}">
-        <div class="score-card-top"><span class="player-avatar">${escapeHtml(player.name.slice(0, 1).toUpperCase())}</span><span class="score-name">${escapeHtml(player.name)}${player.id === playerId ? ' <span class="you-tag">YOU</span>' : ''}${player.isBot ? ' <span class="robot-tag">ROBOT</span>' : ''}${!player.connected ? ' <span class="host-tag">OFFLINE</span>' : ''}</span></div>
-        <div class="score-number">${player.score}<small> pts</small></div>
-        <div class="room-win-count">${player.roomWins} room win${player.roomWins === 1 ? '' : 's'}</div>
-        ${isHost && player.id !== hostId && !player.connected ? `<button class="text-button danger-text" data-action="remove-player" data-player="${escapeHtml(player.id)}" type="button">Remove disconnected player</button>` : ''}
-      </article>`).join('')}
-    </section>
     ${state.status !== 'finished' ? `<details class="help-details"><summary>Rules &amp; wind limits</summary>${rulesMarkup()}</details>` : ''}
   </section>`;
 }

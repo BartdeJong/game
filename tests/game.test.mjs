@@ -270,10 +270,10 @@ test('banking is exclusive, scores the selected tower, and protects it from wind
   ]);
 });
 
-test('checks the win target only after the shared wind resolves', () => {
+test('winning after scoring prevents any towers from toppling that turn', () => {
   const state = activeState([
-    player('a', { score: 10, towers: [{ id: 'a1', height: 2 }] }),
-    player('b'),
+    player('a', { score: 10, towers: [{ id: 'a1', height: 2 }, { id: 'a2', height: 7 }] }),
+    player('b', { towers: [{ id: 'b1', height: 7 }] }),
   ], 13);
   const firstTurn = beginBankingTurn(state, 'a');
   const secondTurn = beginBuildingTurn(firstTurn, 'b', 2);
@@ -281,11 +281,14 @@ test('checks the win target only after the shared wind resolves', () => {
   const result = resolveRound(secondTurn, [
     { playerId: 'a', action: bankAction('a1') },
     { playerId: 'b', action: buildAction() },
-  ], [1, 1]);
+  ], [6, 6]);
   assert.equal(result.status, 'finished');
   assert.equal(result.players[0].score, 13);
   assert.equal(result.players[0].roomWins, 1);
   assert.deepEqual(result.winnerIds, ['a']);
+  assert.deepEqual(result.players.map((item) => item.towers.map((tower) => tower.id)), [['a2'], ['b1']]);
+  assert.deepEqual(result.history[0].toppled, []);
+  assert.deepEqual(result.history[0].fallenCounts, { a: 0, b: 0 });
 });
 
 test('rematches and the room lobby keep cumulative wins and target settings', () => {

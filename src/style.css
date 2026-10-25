@@ -42,7 +42,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   flex-direction: column;
 }
 
-.masthead, .site-footer, .section-heading, .score-card-top, .player-row, .button-row {
+.masthead, .site-footer, .section-heading, .player-row, .button-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -277,10 +277,6 @@ textarea { resize: vertical; }
 .board-panel { margin-top: 35px; }
 .section-heading { align-items: flex-start; gap: 16px; }
 .section-heading h1 { margin-bottom: 10px; }
-.wind-card { min-width: 104px; padding: 11px; border: 1px solid rgba(193, 227, 122, .35); border-radius: 5px; text-align: center; }
-.wind-card > span { color: var(--muted); font: .58rem var(--mono); letter-spacing: .12em; }
-.wind-card > strong { display: block; color: var(--coral); font: 1.35rem var(--mono); }
-.wind-card > small { color: var(--muted); font-size: .62rem; }
 .dice-pair { display: flex; justify-content: center; gap: 5px; margin: 7px 0; }
 .die { display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); gap: 2px; width: 29px; height: 29px; padding: 4px; border-radius: 5px; background: var(--ink); box-shadow: 0 2px 0 #9da89f; }
 .die i { width: 100%; height: 100%; border-radius: 50%; }
@@ -292,26 +288,16 @@ textarea { resize: vertical; }
 .round-roll-heading span { color: var(--muted); }
 .round-roll-results { display: grid; grid-template-columns: repeat(var(--player-columns), minmax(0, 1fr)); gap: 7px; }
 .round-roll-entry { display: grid; min-width: 0; justify-items: center; gap: 3px; padding: 6px 3px; border: 1px solid var(--line); border-radius: 4px; text-align: center; }
-.round-roll-entry strong { max-width: 100%; overflow: hidden; color: #d9e3d9; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
-.round-roll-entry small { color: var(--muted); font: .56rem var(--mono); }
+.round-roll-entry strong { max-width: 100%; overflow: hidden; color: #d9e3d9; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
+.round-roll-entry small { color: var(--muted); font: .62rem var(--mono); }
 .round-roll-ready { border-color: rgba(193, 227, 122, .42); }
 .round-roll-die .die { width: 24px; height: 24px; padding: 3px; }
 .round-roll-bank { padding: 4px 0; color: var(--coral); font: 700 .61rem var(--mono); }
 .round-roll-pending { padding: 4px 0; color: var(--muted); font: 700 .72rem var(--mono); }
 .round-roll-player-score { display: grid; justify-items: center; gap: 1px; line-height: 1.1; }
-.round-roll-player-score strong { color: var(--lime); font: 700 .82rem var(--mono); }
-.round-roll-player-score small { color: var(--muted); font: .5rem var(--mono); }
-.round-roll-entry .round-roll-score { color: var(--lime); font: 700 .52rem var(--mono); }
-.scoreboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 11px; margin: 23px 0; }
-.score-card { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 5px; background: rgba(34, 52, 48, .55); }
-.score-card-me { border-color: rgba(193, 227, 122, .55); }
-.score-card-active { border-color: var(--lime); box-shadow: inset 0 0 0 1px rgba(193, 227, 122, .25); }
-.score-card-top { justify-content: flex-start; gap: 9px; }
-.score-name { font-size: .86rem; font-weight: 600; }
-.score-number { margin-top: 15px; font: 2rem var(--serif); }
-.score-number small { color: var(--muted); font: .72rem var(--mono); }
-.banked-label { margin-top: 2px; font-family: var(--mono); font-size: .65rem; }
-.room-win-count { margin-top: 4px; color: var(--lime); font: .65rem var(--mono); }
+.round-roll-player-score strong { color: var(--lime); font: 700 .95rem var(--mono); }
+.round-roll-player-score small { color: var(--muted); font: .56rem var(--mono); }
+.round-roll-entry .round-roll-score { color: var(--lime); font: 700 .6rem var(--mono); }
 .tower-list { display: grid; gap: 6px; margin-top: 13px; }
 .tower-chip { display: flex; align-items: center; gap: 8px; min-height: 35px; padding: 6px 8px; border: 1px solid rgba(193, 227, 122, .25); border-radius: 3px; color: #d9e3d9; font-size: .73rem; }
 .tower-icon { color: var(--lime); }
@@ -435,9 +421,11 @@ textarea { resize: vertical; }
 .round-result-copy > p { margin: 0; color: var(--muted); }
 .round-result-banner > .fall-summary,
 .round-result-banner > .fall-summary-empty,
+.round-result-banner > .round-wind-result,
 .round-result-banner > .rematch-actions,
 .round-result-banner > .quiet-note { grid-column: 1 / -1; }
 .round-result-banner > .fall-summary { margin: 0; }
+.round-result-banner > .round-wind-result { justify-self: start; }
 .round-result-round .round-result-mark { color: var(--coral); border-color: rgba(255, 149, 118, .58); background: rgba(255, 149, 118, .12); }
 .round-result-round { border-color: rgba(255, 149, 118, .72); background: linear-gradient(110deg, rgba(255, 149, 118, .14), rgba(34, 52, 48, .96) 56%); box-shadow: 0 0 26px rgba(255, 149, 118, .1); }
 .winner-result-list { display: flex; flex-wrap: wrap; gap: 7px; margin: 9px 0; }
@@ -448,12 +436,12 @@ textarea { resize: vertical; }
 .rematch-actions { display: grid; gap: 9px; margin-top: 18px; }
 .topple-animation { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; margin: 16px auto; padding: 13px 18px; border: 1px solid rgba(255, 149, 118, .55); border-radius: 5px; color: #ffb19a; background: rgba(255, 149, 118, .08); }
 .topple-animation > strong { font-size: 1rem; }
-.topple-wind-result { display: flex; align-items: center; gap: 7px; padding: 6px 9px; border: 1px solid rgba(255, 149, 118, .35); border-radius: 4px; background: rgba(20, 33, 31, .65); }
-.topple-wind-result > span:first-child { color: var(--muted); font: .56rem var(--mono); letter-spacing: .08em; }
-.topple-wind-result .dice-pair { align-items: center; gap: 4px; margin: 0; }
-.topple-wind-result .die { width: 24px; height: 24px; padding: 3px; }
-.topple-wind-result .dice-pair b, .topple-wind-result > b { color: var(--muted); font: .7rem var(--mono); }
-.topple-wind-result > strong { color: var(--coral); font: 700 1.25rem var(--mono); }
+.round-wind-result { display: flex; align-items: center; gap: 7px; width: fit-content; padding: 6px 9px; border: 1px solid rgba(255, 149, 118, .35); border-radius: 4px; background: rgba(20, 33, 31, .65); }
+.round-wind-result > span:first-child { color: var(--muted); font: .56rem var(--mono); letter-spacing: .08em; }
+.round-wind-result .dice-pair { align-items: center; gap: 4px; margin: 0; }
+.round-wind-result .die { width: 24px; height: 24px; padding: 3px; }
+.round-wind-result .dice-pair b, .round-wind-result > b { color: var(--muted); font: .7rem var(--mono); }
+.round-wind-result > strong { color: var(--coral); font: 700 1.25rem var(--mono); }
 .falling-tower { display: inline-block; color: var(--coral); font-size: 1.8rem; animation: tower-topple .8s cubic-bezier(.4,0,.8,.4) both; transform-origin: bottom center; }
 @keyframes tower-topple { 0% { transform: rotate(0) translateY(0); } 45% { transform: rotate(35deg) translateY(-8px); } 100% { transform: rotate(82deg) translateY(8px); opacity: .65; } }
 .rules-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
@@ -477,28 +465,23 @@ textarea { resize: vertical; }
   .board-panel .section-heading h1 { margin-bottom: 3px; font-size: clamp(1.7rem, 6vw, 2.3rem); line-height: 1; }
   .board-panel .section-heading .eyebrow { margin-bottom: 4px; font-size: .58rem; }
   .board-panel > .lead-small { margin-bottom: 8px; font-size: .76rem; line-height: 1.35; }
-  .wind-card { min-width: 68px; padding: 5px; }
-  .wind-card > span { font-size: .48rem; }
-  .wind-card > strong { font-size: 1.1rem; }
-  .wind-card > small { font-size: .55rem; }
   .dice-pair { gap: 3px; margin: 4px 0; }
-  .wind-card .die { width: 23px; height: 23px; padding: 3px; }
   .round-roll-bar { margin-bottom: 9px; padding: 7px; }
   .round-roll-heading { margin-bottom: 5px; }
   .round-roll-heading strong, .round-roll-heading span { font-size: .55rem; }
   .round-roll-results { gap: 3px; }
   .round-roll-entry { gap: 2px; padding: 4px 1px; }
-  .round-roll-entry strong { font-size: .55rem; }
-  .round-roll-entry small { font-size: .44rem; }
-  .round-roll-player-score strong { font-size: .66rem; }
-  .round-roll-player-score small { font-size: .4rem; }
-  .round-roll-entry .round-roll-score { font-size: .43rem; }
+  .round-roll-entry strong { font-size: .66rem; }
+  .round-roll-entry small { font-size: .56rem; }
+  .round-roll-player-score strong { font-size: .8rem; }
+  .round-roll-player-score small { font-size: .5rem; }
+  .round-roll-entry .round-roll-score { font-size: .54rem; }
   .round-roll-die .die { width: 21px; height: 21px; padding: 3px; }
   .round-roll-bank { font-size: .52rem; }
   .round-roll-pending { font-size: .65rem; }
   .topple-animation { grid-template-columns: 28px minmax(0, 1fr); gap: 6px; margin: 8px auto; padding: 8px; }
   .topple-animation > strong { font-size: .82rem; }
-  .topple-wind-result { grid-column: 1 / -1; justify-content: center; }
+  .round-result-banner > .round-wind-result { justify-self: stretch; justify-content: center; }
   .tower-board-panel { margin: 8px 0; padding: 10px 8px; }
   .tower-board-heading { margin-bottom: 7px; }
   .tower-board-heading h2 { font-size: 1.25rem; }
@@ -508,13 +491,6 @@ textarea { resize: vertical; }
   .tower-floor { height: 7px; }
   .tower-body .wind-scale { margin-top: 5px; margin-bottom: 7px; }
   .wind-scale-legend { margin-top: 4px; }
-  .scoreboard { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 10px 0; }
-  .score-card { padding: 8px; }
-  .score-card-top { gap: 5px; }
-  .score-card-top .player-avatar { flex-basis: 26px; width: 26px; height: 26px; }
-  .score-name { min-width: 0; font-size: .72rem; overflow-wrap: anywhere; }
-  .score-number { margin-top: 4px; font-size: 1.4rem; }
-  .room-win-count { margin-top: 0; font-size: .56rem; }
   .active-turn-tag { margin-top: 3px; font-size: .5rem; }
   .action-card, .resolution-card, .wait-card { margin-top: 9px; padding: 10px; }
   .round-result-banner { grid-template-columns: 42px minmax(0, 1fr); gap: 9px; margin: 9px 0; padding: 11px; }
@@ -544,11 +520,6 @@ textarea { resize: vertical; }
   .section-heading { align-items: center; }
   .section-heading .pill { align-self: flex-start; }
   .player-meta { display: none; }
-  .scoreboard { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .score-card { padding: 8px; }
-  .score-number { display: inline-block; margin: 4px 8px 0 0; }
-  .banked-label { display: inline-block; }
-  .wind-card { min-width: 68px; padding: 5px; }
   .tower-board { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; overflow-x: hidden; padding-bottom: 0; }
   .button-row > .button { flex: 1; }
 }
