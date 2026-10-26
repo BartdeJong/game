@@ -72,6 +72,9 @@ test('localizes interface text in the supported languages and preserves English'
   assert.deepEqual(LANGUAGES.map((language) => language.code), ['en', 'nl', 'fy', 'de', 'fr', 'es', 'da']);
   assert.equal(localizeText('Host a game', 'en'), 'Host a game');
   assert.equal(localizeText('Host a game', 'nl'), 'Start een spel');
+  assert.equal(localizeText('Bot difficulty', 'nl'), 'Robotmoeilijkheid');
+  assert.equal(localizeText('Easy', 'nl'), 'Makkelijk');
+  assert.equal(localizeText('Hard', 'fr'), 'Difficile');
   assert.equal(localizeText('Roll a die first', 'nl'), 'Gooi eerst een dobbelsteen');
   assert.equal(localizeText('Bank 2 towers for +4 points', 'nl'), 'Bank 2 torens voor +4 punten');
   assert.equal(localizeText('3 pips · choosing', 'nl'), '3 ogen · kiezen');
@@ -439,17 +442,56 @@ test('creates and normalizes short room codes', () => {
 });
 
 test('robots choose banking after rolling or choose building and allocate the rolled die', () => {
-  assert.deepEqual(chooseBotTurnChoice(player('robot'), 80, 4), { kind: 'build' });
-  assert.deepEqual(chooseBotBuildAction(player('robot'), 4), {
+  const easyRobot = player('robot', { isBot: true, botDifficulty: 'easy' });
+  assert.deepEqual(chooseBotTurnChoice(easyRobot, 80, 4), { kind: 'build' });
+  assert.deepEqual(chooseBotBuildAction(easyRobot, 4), {
     kind: 'build',
     placements: [{ towerId: null, elements: 4, slot: 0 }],
   });
-  const readyToWin = player('robot', { score: 7, towers: [{ id: 't1', height: 2 }] });
+  const readyToWin = player('robot', {
+    score: 7,
+    botDifficulty: 'easy',
+    towers: [{ id: 't1', height: 2 }],
+  });
   assert.deepEqual(chooseBotTurnChoice(readyToWin, 10, 4), { kind: 'bank', towerIds: ['t1'] });
   const towersToBank = player('robot', {
+    botDifficulty: 'easy',
     towers: [{ id: 't1', height: 5 }, { id: 't2', height: 4 }, { id: 't3', height: 1 }],
   });
   assert.deepEqual(chooseBotTurnChoice(towersToBank, 80, 2), { kind: 'bank', towerIds: ['t1', 't2'] });
+});
+
+test('normal and hard robots weigh wind risk while easy keeps its simple strategy', () => {
+  const towers = Array.from({ length: 4 }, (_, slot) => ({
+    id: `t${slot}`,
+    height: 5,
+    slot,
+  }));
+  assert.deepEqual(
+    chooseBotTurnChoice(player('easy', { botDifficulty: 'easy', towers }), 80, 1),
+    { kind: 'bank', towerIds: ['t0'] },
+  );
+  assert.deepEqual(
+    chooseBotTurnChoice(player('normal', { botDifficulty: 'normal', towers }), 80, 1),
+    { kind: 'build' },
+  );
+  assert.deepEqual(
+    chooseBotTurnChoice(player('hard', { botDifficulty: 'hard', score: 7, towers: [{ id: 't1', height: 2, slot: 0 }] }), 10, 2),
+    { kind: 'bank', towerIds: ['t1'] },
+  );
+
+  for (const difficulty of ['easy', 'normal', 'hard']) {
+    const robot = player('robot', {
+      isBot: true,
+      botDifficulty: difficulty,
+      towers: [{ id: 't1', height: 4, slot: 0 }, { id: 't2', height: 2, slot: 1 }],
+    });
+    assert.equal(isLegalAction(robot, chooseBotBuildAction(robot, 6), 'build', 6), true);
+    const choice = chooseBotTurnChoice(robot, 80, 6);
+    if (choice.kind === 'bank') {
+      assert.equal(isLegalAction(robot, { kind: 'bank', towerIds: choice.towerIds }, 'choose', 6), true);
+    }
+  }
 });
 
 test('player views hide opponents towers but preserve public wind-topple data', () => {
@@ -503,6 +545,35 @@ test('protocol preserves per-player recovery credentials and submission state', 
   assert.throws(() => parseMessage(JSON.stringify({ type: 'roll', playerId: 'guest' })), /unsupported game message/);
   const bankRequest = { type: 'action', playerId: 'guest', action: bankAction(['tower-1', 'tower-2']) };
   assert.deepEqual(parseMessage(JSON.stringify(bankRequest)), bankRequest);
+
+  const robotState = {
+    ...createMatch(player('host')),
+    players: [player('host'), player('robot', { isBot: true, botDifficulty: 'hard' })],
+  };
+  const robotUpdate = parseMessage(JSON.stringify({
+    type: 'state',
+    state: robotState,
+    submittedCount: 0,
+    playerId: 'host',
+  }));
+  assert.equal(robotUpdate.type, 'state');
+  assert.equal(robotUpdate.state.players[1].botDifficulty, 'hard');
+  const legacyRobotState = {
+    ...createMatch(player('host')),
+    players: [player('host'), player('robot', { isBot: true })],
+  };
+  assert.doesNotThrow(() => parseMessage(JSON.stringify({
+    type: 'state',
+    state: legacyRobotState,
+    submittedCount: 0,
+    playerId: 'host',
+  })));
+  assert.throws(() => parseMessage(JSON.stringify({
+    type: 'state',
+    state: { ...robotState, players: [robotState.players[0], { ...robotState.players[1], botDifficulty: 'expert' }] },
+    submittedCount: 0,
+    playerId: 'host',
+  })), /unsupported game message/);
 
   const state = createMatch(player('host'));
   const update = {

@@ -289,7 +289,10 @@ textarea { resize: vertical; }
 .player-list { display: grid; gap: 8px; margin: 22px 0; }
 .player-row { min-height: 57px; justify-content: flex-start; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 4px; background: rgba(34, 52, 48, .45); }
 .player-avatar { display: inline-grid; flex: 0 0 32px; width: 32px; height: 32px; place-items: center; border-radius: 50%; color: #18251f; background: var(--lime); font-weight: 700; }
-.player-name { flex: 1; font-weight: 600; }
+.player-name { min-width: 0; flex: 1; font-weight: 600; }
+.player-row-bot .player-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bot-difficulty-control { flex: 0 0 88px; }
+.bot-difficulty-select { width: 100%; min-height: 36px; padding: 6px 22px 6px 8px; font-size: .72rem; }
 .room-win-tag { display: inline-block; margin-left: 9px; color: var(--muted); font: .62rem var(--mono); white-space: nowrap; }
 .you-tag, .host-tag, .robot-tag { margin-left: 5px; color: var(--lime); font: .58rem var(--mono); letter-spacing: .06em; }
 .host-tag { color: #9db5a7; }
@@ -574,6 +577,9 @@ textarea { resize: vertical; }
   .language-picker { color: #bdc9be; font-size: .75rem; }
   .language-picker select { min-height: 32px; font-size: .75rem; }
   .player-meta { display: none; }
+  .player-row-bot { gap: 7px; padding: 8px; }
+  .player-row-bot .bot-difficulty-control { flex-basis: 82px; }
+  .player-row-bot .bot-difficulty-select { min-height: 34px; padding: 5px 20px 5px 7px; font-size: .68rem; }
   .tower-board { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; overflow-x: hidden; padding-bottom: 0; }
   .button-row > .button { flex: 1; }
 }

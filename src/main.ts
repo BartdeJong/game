@@ -19,6 +19,8 @@ import {
   towerShield,
   towerPoints,
   validateTargetPoints,
+  isBotDifficulty,
+  type BotDifficulty,
   type MatchState,
   type Player,
   type PlayerAction,
@@ -135,6 +137,11 @@ let botResolveTimer: number | null = null;
 const ROUND_WIND_DISPLAY_MS = 8_000;
 const ROUND_SKIP_DOUBLE_PRESS_MS = 1_000;
 const BOT_TURN_DELAY_MS = 2_500;
+const BOT_DIFFICULTY_OPTIONS: { value: BotDifficulty; label: string }[] = [
+  { value: 'easy', label: 'Easy' },
+  { value: 'normal', label: 'Normal' },
+  { value: 'hard', label: 'Hard' },
+];
 const PLAYER_ROLL_REVEAL_MS = 2_800;
 const NOTICE_DISPLAY_MS = 5_000;
 const FAILURE_DISPLAY_MS = 10_000;
@@ -691,6 +698,7 @@ function renderHost(): string {
     <div class="lobby-robot-control">
       <button class="button button-secondary" data-action="add-robot" type="button" ${state.players.length >= MAX_PLAYERS ? 'disabled' : ''}>＋ Add a robot</button>
       <p class="quiet-note">Robots choose automatically. Add one to play solo or mix robots with guests.</p>
+      <p class="quiet-note">Set each robot to Easy, Normal, or Hard. Higher difficulties consider wind risk and compare more moves.</p>
     </div>
     <div class="pair-area">
       ${connectedPlayers(state).length >= MIN_PLAYERS
@@ -729,10 +737,16 @@ function renderGuest(): string {
 function playerMarkup(player: Player, hostControls: boolean): string {
   const me = player.id === (screen === 'host' ? hostId : guestId);
   const hostPlayerId = hostState?.players[0]?.id ?? guestState?.players[0]?.id;
-  return `<article class="player-row ${player.connected ? '' : 'player-offline'}">
+  const botDifficultyControl = hostControls && player.isBot && hostState?.status === 'lobby'
+    ? `<label class="bot-difficulty-control"><span class="sr-only">${escapeHtml(player.name)} ${localizeText('Bot difficulty', language)}</span><select class="bot-difficulty-select" data-bot-difficulty="${escapeHtml(player.id)}">${BOT_DIFFICULTY_OPTIONS.map(({ value, label }) =>
+      `<option value="${value}" ${(player.botDifficulty ?? 'normal') === value ? 'selected' : ''}>${localizeText(label, language)}</option>`,
+    ).join('')}</select></label>`
+    : '';
+  return `<article class="player-row ${player.connected ? '' : 'player-offline'} ${botDifficultyControl ? 'player-row-bot' : ''}">
     <span class="player-avatar" aria-hidden="true">${escapeHtml(player.name.slice(0, 1).toUpperCase())}</span>
     <span class="player-name">${escapeHtml(player.name)}${me ? ' <span class="you-tag">YOU</span>' : ''}${player.id === hostPlayerId ? ' <span class="host-tag">HOST</span>' : ''}<span class="room-win-tag">${player.roomWins} room win${player.roomWins === 1 ? '' : 's'}</span></span>
     <span class="player-meta">${player.isBot ? 'Robot' : player.connected ? 'Connected' : 'Disconnected'}</span>
+    ${botDifficultyControl}
     ${hostControls && player.isBot ? `<button class="text-button danger-text" data-action="remove-robot" data-player="${escapeHtml(player.id)}" type="button">Remove</button>` : ''}
     ${hostControls && player.id !== hostId && !player.connected ? `<button class="text-button danger-text" data-action="remove-player" data-player="${escapeHtml(player.id)}" type="button">Remove</button>` : ''}
   </article>`;
@@ -1667,6 +1681,7 @@ function addRobot(): void {
     towers: [],
     connected: true,
     isBot: true,
+    botDifficulty: 'normal',
   });
   notice = 'Robot added to the lobby.';
   broadcastState();
@@ -1752,6 +1767,26 @@ app.addEventListener('change', (event) => {
     if (guestNameField && formValues.guestName !== undefined) guestNameField.value = formValues.guestName;
     if (guestRoomCode && formValues.guestRoomCode !== undefined) guestRoomCode.value = formValues.guestRoomCode;
     if (targetPoints && formValues.targetPoints !== undefined) targetPoints.value = formValues.targetPoints;
+    return;
+  }
+  if (target instanceof HTMLSelectElement && target.dataset.botDifficulty !== undefined) {
+    if (!hostState || hostState.status !== 'lobby') {
+      showFailure('Bot difficulty can only be changed in the lobby.');
+      return;
+    }
+    const robot = hostState.players.find((player) =>
+      player.id === target.dataset.botDifficulty && player.isBot);
+    if (!robot) {
+      showFailure('This robot is no longer in the lobby.');
+      return;
+    }
+    if (!isBotDifficulty(target.value)) {
+      showFailure('Choose a valid bot difficulty.');
+      return;
+    }
+    robot.botDifficulty = target.value;
+    broadcastState();
+    render();
     return;
   }
   if (!(target instanceof HTMLInputElement) || target.id !== 'target-points') return;

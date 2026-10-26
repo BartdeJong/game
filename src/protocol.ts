@@ -3,6 +3,7 @@ import {
   MAX_TOWERS,
   MAX_WIN_POINTS,
   MIN_WIN_POINTS,
+  isBotDifficulty,
   type MatchState,
   type PlayerAction,
 } from './game.js';
@@ -183,7 +184,10 @@ function isPlayerState(value: unknown): boolean {
     value.roomWins < 0 ||
     !('towers' in value) ||
     !Array.isArray(value.towers) ||
-    value.towers.length > MAX_TOWERS
+    value.towers.length > MAX_TOWERS ||
+    ('isBot' in value && typeof value.isBot !== 'boolean') ||
+    ('botDifficulty' in value &&
+      (!('isBot' in value) || value.isBot !== true || !isBotDifficulty(value.botDifficulty)))
   ) return false;
   const slots = new Set<number>();
   return value.towers.every((tower, index) => {
