@@ -2,19 +2,24 @@ import { heightLimit, towerPoints, type Player, type PlayerAction } from './game
 
 export type BotTurnChoice =
   | { kind: 'build' }
-  | { kind: 'bank'; towerId: string };
+  | { kind: 'bank'; towerIds: string[] };
 
-export function chooseBotTurnChoice(player: Player, targetPoints: number): BotTurnChoice {
+export function chooseBotTurnChoice(player: Player, targetPoints: number, turnDie: number): BotTurnChoice {
   if (!Number.isInteger(targetPoints) || targetPoints < 1) {
     throw new Error('Robot target must be a positive whole number.');
   }
-  const bankCandidate = player.towers
+  if (!Number.isInteger(turnDie) || turnDie < 1 || turnDie > 6) {
+    throw new Error('Robot die must be a whole number from 1 to 6.');
+  }
+  const bankCandidates = player.towers
     .slice()
-    .sort((left, right) => right.height - left.height)
-    .find((tower) =>
+    .sort((left, right) => right.height - left.height);
+  const shouldBank = bankCandidates.some((tower) =>
       player.score + towerPoints(tower.height) >= targetPoints ||
       (tower.height >= 5 && heightLimit(tower.height) <= 8));
-  return bankCandidate ? { kind: 'bank', towerId: bankCandidate.id } : { kind: 'build' };
+  return shouldBank
+    ? { kind: 'bank', towerIds: bankCandidates.slice(0, turnDie).map((tower) => tower.id) }
+    : { kind: 'build' };
 }
 
 export function chooseBotBuildAction(player: Player, turnDie: number): PlayerAction {

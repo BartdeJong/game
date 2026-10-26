@@ -9,7 +9,6 @@ import {
 
 export type PeerMessage =
   | { type: 'join'; playerId: string; name: string; resumeToken?: string }
-  | { type: 'build'; playerId: string }
   | { type: 'action'; playerId: string; action: PlayerAction }
   | { type: 'state'; state: MatchState; submittedCount: number; playerId: string; resumeToken?: string; isSubmitted?: boolean }
   | { type: 'error'; message: string };
@@ -58,9 +57,6 @@ export function parseMessage(data: string): PeerMessage {
       ...('resumeToken' in value && typeof value.resumeToken === 'string' ? { resumeToken: value.resumeToken } : {}),
     };
   }
-  if (value.type === 'build' && 'playerId' in value && typeof value.playerId === 'string') {
-    return { type: 'build', playerId: value.playerId };
-  }
   if (value.type === 'action' && 'playerId' in value && 'action' in value) {
     if (typeof value.playerId !== 'string' || !isPlayerAction(value.action)) {
       throw new Error('Received an invalid player action.');
@@ -73,7 +69,12 @@ export function parseMessage(data: string): PeerMessage {
 function isPlayerAction(value: unknown): value is PlayerAction {
   if (typeof value !== 'object' || value === null || !('kind' in value)) return false;
   if (value.kind === 'bank') {
-    return 'towerId' in value && typeof value.towerId === 'string';
+    return 'towerIds' in value &&
+      Array.isArray(value.towerIds) &&
+      value.towerIds.length > 0 &&
+      value.towerIds.length <= MAX_TOWERS &&
+      value.towerIds.every((towerId) => typeof towerId === 'string') &&
+      new Set(value.towerIds).size === value.towerIds.length;
   }
   if (value.kind !== 'build' || !('placements' in value) || !Array.isArray(value.placements)) return false;
   return value.placements.every((placement) =>
@@ -163,8 +164,7 @@ function isRoundTurnRoll(value: unknown): value is MatchState['roundTurnRolls'][
     !('choice' in value) ||
     !('die' in value)
   ) return false;
-  if (value.choice === 'bank') return value.die === null;
-  return value.choice === 'build' &&
+  return (value.choice === 'choose' || value.choice === 'build' || value.choice === 'bank') &&
     typeof value.die === 'number' &&
     Number.isInteger(value.die) &&
     value.die >= 1 &&
@@ -195,7 +195,8 @@ function isPlayerState(value: unknown): boolean {
       !('height' in tower) ||
       typeof tower.height !== 'number' ||
       !Number.isInteger(tower.height) ||
-      tower.height < 1
+      tower.height < 1 ||
+      ('toppled' in tower && typeof tower.toppled !== 'boolean')
     ) return false;
     const slot = 'slot' in tower ? tower.slot : index;
     if (typeof slot !== 'number' || !Number.isInteger(slot) || slot < 0 || slot >= MAX_TOWERS || slots.has(slot)) {

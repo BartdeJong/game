@@ -8,7 +8,7 @@ A small, mobile-first dice game for 2–10 players. The static TypeScript app is
 2. The host taps **Host a game**, enters a name, and shares the short room code.
 3. Each guest opens **Join a game**, enters a name and the room code. They join the same lobby automatically.
 4. The host sets a points target (default 80, configurable from 10 to 200), and can add robots to play solo or fill open seats. Once there are 2–10 human and robot players, the host starts the game. Keep the host page open and in the foreground.
-5. Players make their choices and submit turns in parallel. Each player chooses to build or bank; building rolls one die and lets the player add up to that many floors across their towers, while banking scores one tower without a die roll. Two shared wind dice are rolled after all players submit. Room win totals carry over between games.
+5. At the start of each round, the host automatically rolls one die for every player. Each player briefly sees their own animated die full-screen, and all results remain in the shared roll bar. Players then choose to build or bank and submit turns in parallel. Building lets a player add up to the rolled number of floors across their towers. Banking scores one or more chosen towers, up to the number rolled; players may bank fewer. Two shared wind dice are rolled after all players submit. Room win totals carry over between games.
 
 Room codes are eight characters, displayed in two groups for readability. PeerJS Cloud is used only to introduce the browsers and exchange WebRTC setup messages; the game is configured for direct WebRTC connections with STUN and no TURN relay. The room code is an invite, so share it only with players in your game. Internet access is required for room setup. Using the same Wi‑Fi is recommended, but network isolation or firewall restrictions can still prevent a direct connection. The free shared signaling service may be unavailable or rate-limited; it is not an availability guarantee.
 
@@ -20,8 +20,8 @@ Install Skyline Dice from the browser menu (for example, **Install app** in Chro
 
 ## Rules
 
-- Players act in parallel. Each player chooses building or banking; a build choice rolls one six-sided die, while banking rolls no die. Build floors across existing towers or start at most one new tower, up to the die result. Use **Undo one** to take a floor back. Up to six towers can stand. Each tower displays its bank value, `height × (height + 1) / 2`.
-- After all players submit, their build and bank actions are applied and bank points are awarded. Banking scores and removes the selected tower from the standing skyline before wind protection is calculated.
+- Players act in parallel. At the start of each round, the host automatically rolls a six-sided die for each player. After the animated roll, choose **Build** or **Bank**. Build floors across existing towers or start at most one new tower, up to the die result. Use **Undo one** to take a floor back. Up to six towers can stand. Each tower displays its bank value, `height × (height + 1) / 2`.
+- Banking lets a player choose one or more towers, up to the die result; they may bank fewer. Each chosen tower scores its bank value and is removed from the standing skyline before wind protection is calculated.
 - If any player reaches the target after bank points are awarded, the game ends immediately and no towers topple that round. Otherwise, calculate protection from the towers still standing, then check all standing towers against the shared wind together.
 - Each standing tower beyond the first adds +1 to the wind limit of every standing tower, up to +3. Banked towers have already been removed, so they do not contribute protection. This protection is calculated once and stays fixed for the whole wind check.
 - A tower topples when the total of the two wind dice is equal to or greater than its base limit plus protection. Base limits are: height 1 → 12, 2 → 11, 3 → 10, 4 → 9, 5 → 8, 6 → 7, 7 → 6, 8 → 5, 9 → 4, 10 → 3, and 11 or higher → 2.
@@ -49,8 +49,8 @@ The dev server is for development only and does not create a LAN room server. To
 - Open the published HTTPS page in Safari on the host and at least one guest iPhone.
 - Enter the host's short room code on one or more guest iPhones and confirm they join automatically.
 - Repeat pairing for up to nine guests, then confirm each player sees their own skyline and the shared bar with every player's choice, build die, and round score, followed by the wind result.
-- Confirm each player can choose and submit a move while others are still deciding; building rolls one die, while banking rolls none.
-- Confirm every build die appears in the roll bar and the wind is rolled once after all players submit, with the same result shared with everyone.
+- Confirm each player's die rolls automatically with a full-screen animation at the start of each round, then each player can choose to build or bank and submit while others are still deciding. Verify banking allows selecting fewer towers than the roll, but never more.
+- Confirm every player's die appears in the roll bar and the wind is rolled once after all players submit, with the same result shared with everyone.
 - Confirm the host can change the default 80-point target in the lobby, the wind result stays visible for 8 seconds before the next round, and room win totals carry into a same-room rematch.
 - Background and resume Safari, close/reopen the host and guest pages, and verify the host can restore the room before guests rejoin with their saved identities.
 - Interrupt Wi‑Fi and confirm the room service reconnects or the saved game can be resumed without losing the current turn.
