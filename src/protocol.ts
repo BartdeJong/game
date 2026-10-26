@@ -109,6 +109,7 @@ function isMatchState(value: unknown): value is MatchState {
     !Number.isInteger(value.targetPoints) ||
     value.targetPoints < MIN_WIN_POINTS ||
     value.targetPoints > MAX_WIN_POINTS ||
+    ('rollAnimationEnabled' in value && typeof value.rollAnimationEnabled !== 'boolean') ||
     !('players' in value) ||
     !Array.isArray(value.players) ||
     value.players.length > MAX_PLAYERS ||

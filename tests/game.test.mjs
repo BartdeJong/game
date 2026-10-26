@@ -75,6 +75,8 @@ test('localizes interface text in the supported languages and preserves English'
   assert.equal(localizeText('Bot difficulty', 'nl'), 'Robotmoeilijkheid');
   assert.equal(localizeText('Easy', 'nl'), 'Makkelijk');
   assert.equal(localizeText('Hard', 'fr'), 'Difficile');
+  assert.equal(localizeText('Animate dice rolls', 'nl'), 'Dobbelsteenworpen animeren');
+  assert.match(localizeText('When off, rolls stay visible but skip the full-screen reveal and die animation.', 'de'), /Vollbildanzeige/);
   assert.equal(localizeText('Roll a die first', 'nl'), 'Gooi eerst een dobbelsteen');
   assert.equal(localizeText('Bank 2 towers for +4 points', 'nl'), 'Bank 2 torens voor +4 punten');
   assert.equal(localizeText('3 pips · choosing', 'nl'), '3 ogen · kiezen');
@@ -576,6 +578,7 @@ test('protocol preserves per-player recovery credentials and submission state', 
   })), /unsupported game message/);
 
   const state = createMatch(player('host'));
+  assert.equal(state.rollAnimationEnabled, true);
   const update = {
     type: 'state',
     state,
@@ -585,6 +588,18 @@ test('protocol preserves per-player recovery credentials and submission state', 
     isSubmitted: true,
   };
   assert.deepEqual(parseMessage(JSON.stringify(update)), update);
+  const disabledAnimation = {
+    ...update,
+    state: { ...state, rollAnimationEnabled: false },
+  };
+  assert.equal(parseMessage(JSON.stringify(disabledAnimation)).state.rollAnimationEnabled, false);
+  const legacyState = { ...state };
+  delete legacyState.rollAnimationEnabled;
+  assert.equal(parseMessage(JSON.stringify({ ...update, state: legacyState })).state.rollAnimationEnabled, undefined);
+  assert.throws(() => parseMessage(JSON.stringify({
+    ...update,
+    state: { ...state, rollAnimationEnabled: 'no' },
+  })), /unsupported game message/);
 
   const parallelRound = beginBuildingTurn(
     beginBankingTurn(activeState([player('host'), player('guest')]), 'guest', 2),

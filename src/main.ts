@@ -694,6 +694,13 @@ function renderHost(): string {
       <div class="target-input-row"><input id="target-points" type="number" min="${MIN_WIN_POINTS}" max="${MAX_WIN_POINTS}" step="1" value="${state.targetPoints}" /><span>points</span></div>
       <p class="quiet-note">The first player to reach this score wins after the round resolves.</p>
     </div>
+    <div class="target-setting-card roll-animation-setting">
+      <label class="roll-animation-toggle" for="roll-animation-enabled">
+        <input id="roll-animation-enabled" type="checkbox" ${state.rollAnimationEnabled !== false ? 'checked' : ''} />
+        <span>Animate dice rolls</span>
+      </label>
+      <p class="quiet-note">When off, rolls stay visible but skip the full-screen reveal and die animation.</p>
+    </div>
     <div class="player-list">${state.players.map((player) => playerMarkup(player, true)).join('')}</div>
     <div class="lobby-robot-control">
       <button class="button button-secondary" data-action="add-robot" type="button" ${state.players.length >= MAX_PLAYERS ? 'disabled' : ''}>＋ Add a robot</button>
@@ -763,7 +770,7 @@ function roundRollBarMarkup(state: MatchState, readyCount: number, isHost: boole
     <div class="round-roll-heading"><strong>PLAYER ROLLS &amp; SCORES</strong><span>${readyCount}/${state.players.length} moves submitted</span></div>
     <div class="round-roll-results" style="--player-columns:${Math.min(state.players.length, 5)}">${state.players.map((player) => {
       const roll = state.roundTurnRolls.find((turn) => turn.playerId === player.id);
-      const animateRoll = !!roll && !animatedRollPlayers.has(player.id);
+      const animateRoll = state.rollAnimationEnabled !== false && !!roll && !animatedRollPlayers.has(player.id);
       if (animateRoll) animatedRollPlayers.add(player.id);
       const result = roll
         ? `<span class="round-roll-die ${animateRoll ? 'round-roll-die-rolling' : ''}">${dieMarkup(roll.die)}</span><small>${localizeText(`${roll.die} pips · ${roll.choice === 'choose' ? 'choosing' : roll.choice}`, language)}</small>`
@@ -789,7 +796,9 @@ function renderGame(state: MatchState, isHost: boolean): string {
   const playerId = isHost ? hostId : guestId;
   const me = state.players.find((player) => player.id === playerId);
   const myRoll = state.roundTurnRolls.find((turn) => turn.playerId === playerId);
-  const rollReveal = playerRollReveal?.key === `${state.round}:${playerId}` && myRoll
+  const rollReveal = state.rollAnimationEnabled !== false &&
+    playerRollReveal?.key === `${state.round}:${playerId}` &&
+    myRoll
     ? `<div class="die-roll-overlay" role="status" aria-live="polite" aria-atomic="true">
         <div class="die-roll-splash">
           <span class="eyebrow">${localizeText('YOUR ROLL', language)}</span>
@@ -1236,7 +1245,9 @@ function rollPendingTurns(): void {
     if (hostState.roundTurnRolls.some((turn) => turn.playerId === player.id)) continue;
     const die = rollTurnDie();
     hostState = beginTurnRoll(hostState, player.id, die);
-    if (player.id === hostId) revealPlayerRoll(hostState.round, player.id, player.name, die);
+    if (player.id === hostId && hostState.rollAnimationEnabled !== false) {
+      revealPlayerRoll(hostState.round, player.id, player.name, die);
+    }
   }
   submitBotActions();
 }
@@ -1530,6 +1541,7 @@ function connectGuest(roomCode: string, recovery?: GuestRecoveryRecord): void {
           if (
             currentRoll &&
             currentPlayer &&
+            guestState.rollAnimationEnabled !== false &&
             (guestState.round !== previousRound || currentRoll.die !== previousRoll?.die)
           ) {
             revealPlayerRoll(guestState.round, guestId, currentPlayer.name, currentRoll.die);
@@ -1785,6 +1797,16 @@ app.addEventListener('change', (event) => {
       return;
     }
     robot.botDifficulty = target.value;
+    broadcastState();
+    render();
+    return;
+  }
+  if (target instanceof HTMLInputElement && target.id === 'roll-animation-enabled') {
+    if (!hostState || hostState.status !== 'lobby') {
+      showFailure('Roll animation can only be changed in the lobby.');
+      return;
+    }
+    hostState.rollAnimationEnabled = target.checked;
     broadcastState();
     render();
     return;

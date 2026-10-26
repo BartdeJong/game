@@ -68,6 +68,7 @@ export interface MatchState {
   status: 'lobby' | 'choice' | 'resolution' | 'finished';
   round: number;
   targetPoints: number;
+  rollAnimationEnabled?: boolean;
   dice: [number, number] | null;
   roundTurnRolls: RoundTurnRoll[];
   roundActions: RoundAction[];
@@ -84,6 +85,7 @@ export function createMatch(host: Player, targetPoints = DEFAULT_WIN_POINTS): Ma
     status: 'lobby',
     round: 0,
     targetPoints,
+    rollAnimationEnabled: true,
     dice: null,
     roundTurnRolls: [],
     roundActions: [],

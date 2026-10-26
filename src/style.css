@@ -270,6 +270,9 @@ textarea { resize: vertical; }
 .target-input-row input { max-width: 170px; min-height: 48px; }
 .target-input-row span { color: var(--muted); font: .78rem var(--mono); }
 .target-setting-card .quiet-note { margin-bottom: 0; }
+.roll-animation-toggle { display: flex !important; align-items: center; gap: 10px; margin: 0 !important; cursor: pointer; }
+.roll-animation-toggle input { width: 18px; min-height: 18px; flex: none; accent-color: var(--lime); }
+.roll-animation-toggle span { font-weight: 600; }
 .room-code-card { max-width: 400px; margin-left: 0; }
 .room-code-input {
   min-height: 62px;
