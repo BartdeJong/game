@@ -762,13 +762,15 @@ function playerMarkup(player: Player, hostControls: boolean): string {
 function roundRollBarMarkup(state: MatchState, readyCount: number, isHost: boolean): string {
   const latestRound = state.history.at(-1);
   const showRoundScores = state.status === 'resolution' || state.status === 'finished';
+  const highScore = Math.max(...state.players.map((player) => player.score));
+  const rankedPlayers = [...state.players].sort((a, b) => b.score - a.score);
   if (animatedRollRound !== state.round) {
     animatedRollRound = state.round;
     animatedRollPlayers.clear();
   }
   return `<section class="round-roll-bar" aria-label="Player rolls and round scores">
     <div class="round-roll-heading"><strong>PLAYER ROLLS &amp; SCORES</strong><span>${readyCount}/${state.players.length} moves submitted</span></div>
-    <div class="round-roll-results" style="--player-columns:${Math.min(state.players.length, 5)}">${state.players.map((player) => {
+    <div class="round-roll-results" style="--player-columns:${Math.min(state.players.length, 5)}">${rankedPlayers.map((player) => {
       const roll = state.roundTurnRolls.find((turn) => turn.playerId === player.id);
       const animateRoll = state.rollAnimationEnabled !== false && !!roll && !animatedRollPlayers.has(player.id);
       if (animateRoll) animatedRollPlayers.add(player.id);
@@ -785,8 +787,9 @@ function roundRollBarMarkup(state: MatchState, readyCount: number, isHost: boole
       const removePlayer = isHost && player.id !== hostId && !player.connected
         ? `<button class="text-button danger-text" data-action="remove-player" data-player="${escapeHtml(player.id)}" type="button">Remove disconnected player</button>`
         : '';
-      return `<article class="round-roll-entry ${roll ? 'round-roll-ready' : ''}" title="${escapeHtml(player.name)}">
-        <strong>${escapeHtml(player.name)}${!player.connected ? ' · OFFLINE' : ''}</strong>${result}${score}${roundScore}${removePlayer}
+      const isLeader = highScore > 0 && player.score === highScore;
+      return `<article class="round-roll-entry ${roll ? 'round-roll-ready' : ''} ${isLeader ? 'round-roll-leader-entry' : ''}" title="${escapeHtml(player.name)}">
+        <strong>${escapeHtml(player.name)}${!player.connected ? ' · OFFLINE' : ''}</strong>${isLeader ? `<small class="round-roll-leader">${localizeText('LEADER', language)}</small>` : ''}${result}${score}${roundScore}${removePlayer}
       </article>`;
     }).join('')}</div>
   </section>`;
@@ -1371,6 +1374,7 @@ function commitAction(playerId: string, action: PlayerAction): void {
     }
     selectedBankTowerIds.clear();
     guestChannel?.send(JSON.stringify({ type: 'action', playerId, action }));
+    guestState = state;
     guestSubmitted = true;
     showNotice('Your turn is in. The wind waits for everyone to finish.');
     broadcastGuestStatus();

@@ -322,6 +322,8 @@ textarea { resize: vertical; }
 .round-roll-entry strong { max-width: 100%; overflow: hidden; color: #d9e3d9; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
 .round-roll-entry small { color: var(--muted); font: .62rem var(--mono); }
 .round-roll-ready { border-color: rgba(193, 227, 122, .42); }
+.round-roll-leader-entry { border-color: var(--lime); background: rgba(193, 227, 122, .1); box-shadow: inset 0 0 0 1px rgba(193, 227, 122, .28); }
+.round-roll-leader { padding: 2px 5px; border-radius: 2px; color: var(--lime) !important; background: rgba(193, 227, 122, .12); font: 700 .5rem var(--mono) !important; letter-spacing: .06em; }
 .round-roll-die .die { width: 24px; height: 24px; padding: 3px; }
 .round-roll-die-rolling .die { animation: die-roll .9s cubic-bezier(.2, .8, .25, 1) both; box-shadow: 0 5px 0 #9da89f, 0 9px 18px rgba(0, 0, 0, .3); will-change: transform; }
 .round-roll-die-rolling .die-dot { animation: die-dot-reveal .32s ease-out .52s both; }

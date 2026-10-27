@@ -97,6 +97,7 @@ test('localizes interface text in the supported languages and preserves English'
   assert.equal(localizeText('Host a game', 'fr'), 'Héberger une partie');
   assert.equal(localizeText('Host a game', 'es'), 'Crear partida');
   assert.equal(localizeText('Host a game', 'da'), 'Vær vært for et spil');
+  assert.equal(localizeText('LEADER', 'nl'), 'KOPLOPER');
   assert.equal(localizeText('ROUND 3 · PARALLEL TURNS', 'fr'), 'MANCHE 3 · TOURS SIMULTANÉS');
   assert.equal(localizeText('Tower, height 4, worth 10 points', 'nl'), 'Toren, hoogte 4, waarde 10 punten');
   assert.equal(localizeText('Shared wind: 2 plus 5 equals 7', 'es'), 'Viento compartido: 2 más 5 es 7');

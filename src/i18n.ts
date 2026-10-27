@@ -105,6 +105,7 @@ const phraseRows: Array<[string, TranslationSet]> = [
   ['PLAYER ROLLS & SCORES', { nl: 'WORPEN & SCORES', fy: 'BEURTEN & SKOARES', de: 'WÜRFE & PUNKTE', fr: 'LANCERS ET SCORES', es: 'TIRADAS Y PUNTUACIONES', da: 'KAST OG POINT' }],
   ['Player rolls and round scores', { nl: 'Worpen en scores van deze ronde', fy: 'Beurten en skoares fan dizze ronde', de: 'Würfe und Rundenergebnisse', fr: 'Lancers et scores de la manche', es: 'Tiradas y puntuaciones de la ronda', da: 'Kast og rundescore' }],
   ['PTS TOTAL', { nl: 'TOTAAL PNT', fy: 'TOTAAL PNT', de: 'PUNKTE GESAMT', fr: 'TOTAL PTS', es: 'PUNTOS TOTAL', da: 'POINT I ALT' }],
+  ['LEADER', { nl: 'KOPLOPER', fy: 'FOAROAN', de: 'FÜHREND', fr: 'EN TÊTE', es: 'LÍDER', da: 'FØRER' }],
   ['BANK', { nl: 'BANK', fy: 'BANK', de: 'SICHERN', fr: 'BANQUER', es: 'ASEGURAR', da: 'BANK' }],
   ['No die', { nl: 'Geen dobbelsteen', fy: 'Gjin dobbelstien', de: 'Kein Würfel', fr: 'Pas de dé', es: 'Sin dado', da: 'Ingen terning' }],
   ['Choosing', { nl: 'Kiezen…', fy: 'Kieze…', de: 'Wählt…', fr: 'Choix en cours…', es: 'Eligiendo…', da: 'Vælger…' }],
