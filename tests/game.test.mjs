@@ -564,6 +564,22 @@ test('Extreme Robot returns a legal build after its deeper search', () => {
   );
 });
 
+test('Extreme Robot forecasts opponents while returning a legal action', () => {
+  const extreme = player('extreme', {
+    botDifficulty: 'extreme',
+    extremeSearchDepth: 1,
+    towers: [0, 1, 2].map((slot) => ({ id: `own-${slot}`, height: 1, slot })),
+  });
+  const opponent = player('opponent', {
+    score: 40,
+    towers: [{ id: 'rival', height: 4, slot: 0 }],
+  });
+  const choice = chooseBotTurnChoice(extreme, 80, 6, [{ player: opponent, turnDie: 4 }]);
+
+  assert.ok(choice.action);
+  assert.equal(isLegalAction(extreme, choice.action, choice.kind, 6), true);
+});
+
 test('player views hide opponents towers but preserve public wind-topple data', () => {
   const state = activeState([
     player('a'),
