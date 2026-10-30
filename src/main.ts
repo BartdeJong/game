@@ -1953,32 +1953,32 @@ app.addEventListener('change', (event) => {
     if (targetPoints && formValues.targetPoints !== undefined) targetPoints.value = formValues.targetPoints;
     return;
   }
+  if (target instanceof HTMLInputElement && target.dataset.extremeSearchDepth !== undefined) {
+    if (!hostState || hostState.status !== 'lobby') {
+      showFailure('Search depth can only be changed in the lobby.');
+      return;
+    }
+    const robot = hostState.players.find((player) =>
+      player.id === target.dataset.extremeSearchDepth &&
+      player.isBot &&
+      (player.botDifficulty ?? 'normal') === 'extreme');
+    if (!robot) {
+      showFailure('This robot is no longer available for a search-depth change.');
+      return;
+    }
+    const depth = Number(target.value);
+    if (!isExtremeSearchDepth(depth)) {
+      showFailure('Search depth must be a whole number from 1 to 500.');
+      return;
+    }
+    robot.extremeSearchDepth = depth;
+    broadcastState();
+    render();
+    return;
+  }
   if (target instanceof HTMLSelectElement && target.dataset.botDifficulty !== undefined) {
     if (!hostState || hostState.status !== 'lobby') {
       showFailure('Bot difficulty can only be changed in the lobby.');
-      return;
-    }
-    if (target instanceof HTMLInputElement && target.dataset.extremeSearchDepth !== undefined) {
-      if (!hostState || hostState.status !== 'lobby') {
-        showFailure('Search depth can only be changed in the lobby.');
-        return;
-      }
-      const robot = hostState.players.find((player) =>
-        player.id === target.dataset.extremeSearchDepth &&
-        player.isBot &&
-        (player.botDifficulty ?? 'normal') === 'extreme');
-      if (!robot) {
-        showFailure('This robot is no longer available for a search-depth change.');
-        return;
-      }
-      const depth = Number(target.value);
-      if (!isExtremeSearchDepth(depth)) {
-        showFailure('Search depth must be a whole number from 1 to 500.');
-        return;
-      }
-      robot.extremeSearchDepth = depth;
-      broadcastState();
-      render();
       return;
     }
     const robot = hostState.players.find((player) =>
