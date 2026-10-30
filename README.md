@@ -27,7 +27,7 @@ Install Skyline Dice from the browser menu (for example, **Install app** in Chro
 - A tower topples when the total of the two wind dice is equal to or greater than its base limit plus protection. Base limits are: height 1 → 12, 2 → 11, 3 → 10, 4 → 9, 5 → 8, 6 → 7, 7 → 6, 8 → 5, 9 → 4, 10 → 3, and 11 or higher → 2.
 - The host sets a room target from 10 to 200 points (default 80). The first player to reach the target wins and earns one room win.
 
-New and extended towers are exposed to the shared wind at the end of each complete round. Players see their own towers and every player's score; opponents' towers and detailed moves stay hidden. A player's own submitted growth remains visible while others finish their turns. When towers topple, every player's screen shows the same wind result and a falling-tower animation. Robots use the same build-or-bank choice as people. The host can set each robot to Easy, Normal, Hard, Ultra Hard, or Extreme Robot in the lobby: Easy uses simple rules, Normal considers exact wind risk, Hard compares legal bank/build options and tower placements against expected wind outcomes, Ultra Hard adds a next-round lookahead, and Extreme Robot progressively searches up to its per-robot depth setting (1–500 future turns, default 8) without a time limit, while assuming an opponent will take an available winning bank. Very high depths can take an impractically long time. Robot decisions run in separate Web Workers so multiple robots can search at the same time. Room win totals remain with the players when the host starts another game in the same room.
+New and extended towers are exposed to the shared wind at the end of each complete round. Players see their own towers and every player's score; opponents' towers and detailed moves stay hidden. A player's own submitted growth remains visible while others finish their turns. When towers topple, every player's screen shows the same wind result and a falling-tower animation. Robots use the same build-or-bank choice as people. The host can set each robot to Easy, Normal, Hard, Ultra Hard, or Extreme Robot in the lobby: Easy uses simple rules, Normal considers exact wind risk, Hard compares legal bank/build options and tower placements against expected wind outcomes, Ultra Hard adds a next-round lookahead, and Extreme Robot selectively searches promising turn actions to its per-robot depth setting (1–500 future turns, default 8) without a time limit. Its win estimates account for seeded simulations of opponents using an expected-value bank/build policy; an available winning bank is handled immediately. Very high depths can take an impractically long time. Robot decisions run in separate Web Workers so multiple robots can search at the same time. Room win totals remain with the players when the host starts another game in the same room.
 
 Each standing tower has a vertical 2–12 wind scale beside it: green totals are safe, coral totals can topple it, and the current shared wind is outlined after the roll.
 
@@ -39,8 +39,11 @@ Requires Node.js 20 or newer for development and builds. Players need a modern m
 npm ci
 npm test
 npm run build
+npm run bot:self-play -- 100 20261030
 npm run dev
 ```
+
+The optional self-play command runs seeded games with one robot of each difficulty and reports their win rates. Extreme Robot is set to depth 1 in this benchmark to keep it practical; results are comparative measurements, not a guarantee of strength against human play.
 
 The dev server is for development only and does not create a LAN room server. To test PWA installation and offline launch, build and serve the app over HTTPS (localhost is also treated as secure), install it from the browser, open it once online, then enable airplane mode and reopen it. The game shell should load; multiplayer room actions should report that a connection is unavailable. To test multi-device pairing, publish the build to GitHub Pages or serve the built files through a static server. Physical iPhone tests are required for short-code joining, PWA installation, direct ICE connectivity, multiple guests, offline launch, and background/resume behavior.
 

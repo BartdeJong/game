@@ -7,7 +7,8 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "tsc -p tsconfig.test.json && node --test tests/game.test.mjs"
+    "test": "tsc -p tsconfig.test.json && node --test tests/game.test.mjs",
+    "bot:self-play": "tsc -p tsconfig.test.json && node scripts/bot-self-play.mjs"
   },
   "dependencies": {
     "peerjs": "^1.5.5"
