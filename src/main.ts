@@ -7,11 +7,14 @@ import {
   createMatch,
   createPlayerView,
   heightLimit,
+  DEFAULT_EXTREME_SEARCH_DEPTH,
   isLegalAction,
   MAX_WIN_POINTS,
   MAX_TOWER_SHIELD,
   MAX_TOWERS,
+  MAX_EXTREME_SEARCH_DEPTH,
   MAX_PLAYERS,
+  MIN_EXTREME_SEARCH_DEPTH,
   MIN_WIN_POINTS,
   MIN_PLAYERS,
   resolveRound,
@@ -20,6 +23,7 @@ import {
   towerPoints,
   validateTargetPoints,
   isBotDifficulty,
+  isExtremeSearchDepth,
   type BotDifficulty,
   type MatchState,
   type Player,
@@ -716,7 +720,7 @@ function renderHost(): string {
     <div class="lobby-robot-control">
       <button class="button button-secondary" data-action="add-robot" type="button" ${state.players.length >= MAX_PLAYERS ? 'disabled' : ''}>＋ Add a robot</button>
       <p class="quiet-note">Robots choose automatically. Add one to play solo or mix robots with guests.</p>
-      <p class="quiet-note">Set each robot to Easy, Normal, Hard, Ultra Hard, or Extreme Robot. Extreme Robot searches further ahead, reacts to immediate winning threats, and can think for up to 7 seconds.</p>
+      <p class="quiet-note">${localizeText('Set each robot to Easy, Normal, Hard, Ultra Hard, or Extreme Robot. Extreme Robot searches to its configured depth (1–50 future turns) with no time limit; higher depths can take a long time.', language)}</p>
     </div>
     <div class="pair-area">
       ${connectedPlayers(state).length >= MIN_PLAYERS
@@ -760,11 +764,18 @@ function playerMarkup(player: Player, hostControls: boolean): string {
       `<option value="${value}" ${(player.botDifficulty ?? 'normal') === value ? 'selected' : ''}>${localizeText(label, language)}</option>`,
     ).join('')}</select></label>`
     : '';
+  const botSearchDepthControl = hostControls &&
+    player.isBot &&
+    (player.botDifficulty ?? 'normal') === 'extreme' &&
+    hostState?.status === 'lobby'
+    ? `<label class="bot-search-depth-control"><span class="bot-search-depth-label">${localizeText('Depth', language)}</span><input class="bot-search-depth-input" type="number" min="${MIN_EXTREME_SEARCH_DEPTH}" max="${MAX_EXTREME_SEARCH_DEPTH}" step="1" value="${isExtremeSearchDepth(player.extremeSearchDepth) ? player.extremeSearchDepth : DEFAULT_EXTREME_SEARCH_DEPTH}" data-extreme-search-depth="${escapeHtml(player.id)}" aria-label="${escapeHtml(`${player.name} ${localizeText('Search depth in future turns', language)}`)}" /></label>`
+    : '';
   return `<article class="player-row ${player.connected ? '' : 'player-offline'} ${botDifficultyControl ? 'player-row-bot' : ''}">
     <span class="player-avatar" aria-hidden="true">${escapeHtml(player.name.slice(0, 1).toUpperCase())}</span>
     <span class="player-name">${escapeHtml(player.name)}${me ? ' <span class="you-tag">YOU</span>' : ''}${player.id === hostPlayerId ? ' <span class="host-tag">HOST</span>' : ''}<span class="room-win-tag">${player.roomWins} room win${player.roomWins === 1 ? '' : 's'}</span></span>
     <span class="player-meta">${player.isBot ? 'Robot' : player.connected ? 'Connected' : 'Disconnected'}</span>
     ${botDifficultyControl}
+    ${botSearchDepthControl}
     ${hostControls && player.isBot ? `<button class="text-button danger-text" data-action="remove-robot" data-player="${escapeHtml(player.id)}" type="button">Remove</button>` : ''}
     ${hostControls && player.id !== hostId && !player.connected ? `<button class="text-button danger-text" data-action="remove-player" data-player="${escapeHtml(player.id)}" type="button">Remove</button>` : ''}
   </article>`;
@@ -1924,6 +1935,29 @@ app.addEventListener('change', (event) => {
   if (target instanceof HTMLSelectElement && target.dataset.botDifficulty !== undefined) {
     if (!hostState || hostState.status !== 'lobby') {
       showFailure('Bot difficulty can only be changed in the lobby.');
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.extremeSearchDepth !== undefined) {
+      if (!hostState || hostState.status !== 'lobby') {
+        showFailure('Search depth can only be changed in the lobby.');
+        return;
+      }
+      const robot = hostState.players.find((player) =>
+        player.id === target.dataset.extremeSearchDepth &&
+        player.isBot &&
+        (player.botDifficulty ?? 'normal') === 'extreme');
+      if (!robot) {
+        showFailure('This robot is no longer available for a search-depth change.');
+        return;
+      }
+      const depth = Number(target.value);
+      if (!isExtremeSearchDepth(depth)) {
+        showFailure('Search depth must be a whole number from 1 to 50.');
+        return;
+      }
+      robot.extremeSearchDepth = depth;
+      broadcastState();
+      render();
       return;
     }
     const robot = hostState.players.find((player) =>

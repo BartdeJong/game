@@ -5,6 +5,9 @@ export const DEFAULT_WIN_POINTS = 80;
 export const MIN_WIN_POINTS = 10;
 export const MAX_WIN_POINTS = 200;
 export const MAX_TOWER_SHIELD = 3;
+export const DEFAULT_EXTREME_SEARCH_DEPTH = 8;
+export const MIN_EXTREME_SEARCH_DEPTH = 1;
+export const MAX_EXTREME_SEARCH_DEPTH = 50;
 
 export interface Tower {
   id: string;
@@ -25,10 +28,18 @@ export interface Player {
   connected: boolean;
   isBot?: boolean;
   botDifficulty?: BotDifficulty;
+  extremeSearchDepth?: number;
 }
 
 export function isBotDifficulty(value: unknown): value is BotDifficulty {
   return value === 'easy' || value === 'normal' || value === 'hard' || value === 'ultra' || value === 'extreme';
+}
+
+export function isExtremeSearchDepth(value: unknown): value is number {
+  return typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= MIN_EXTREME_SEARCH_DEPTH &&
+    value <= MAX_EXTREME_SEARCH_DEPTH;
 }
 
 export interface Placement {

@@ -9,8 +9,10 @@ import {
   createMatch,
   createPlayerView,
   chooseTurnMode,
+  DEFAULT_EXTREME_SEARCH_DEPTH,
   DEFAULT_WIN_POINTS,
   heightLimit,
+  isExtremeSearchDepth,
   isLegalAction,
   MAX_PLAYERS,
   returnToLobby,
@@ -144,6 +146,15 @@ test('defaults the room win target to 80 and validates configured targets', () =
   assert.equal(createMatch(player('host'), 200).targetPoints, 200);
   assert.throws(() => createMatch(player('host'), 9), /10 to 200/);
   assert.throws(() => createMatch(player('host'), 80.5), /whole number/);
+});
+
+test('validates Extreme Robot search depth settings', () => {
+  assert.equal(DEFAULT_EXTREME_SEARCH_DEPTH, 8);
+  assert.equal(isExtremeSearchDepth(1), true);
+  assert.equal(isExtremeSearchDepth(50), true);
+  assert.equal(isExtremeSearchDepth(0), false);
+  assert.equal(isExtremeSearchDepth(50.5), false);
+  assert.equal(isExtremeSearchDepth(51), false);
 });
 
 test('allows rooms with up to ten players', () => {
@@ -538,13 +549,17 @@ test('Ultra Hard uses next-round wind and banking outcomes to plan its build', (
 
 test('Extreme Robot returns a legal build after its deeper search', () => {
   const towers = [0, 1, 2].map((slot) => ({ id: `t${slot}`, height: 1, slot }));
-  const extreme = player('extreme', { botDifficulty: 'extreme', towers });
+  const extreme = player('extreme', { botDifficulty: 'extreme', extremeSearchDepth: 1, towers });
   const choice = chooseBotTurnChoice(extreme, 80, 6);
   assert.equal(choice.kind, 'build');
   const action = choice.action;
 
   assert.ok(action);
   assert.equal(isLegalAction(extreme, action, 'build', 6), true);
+  assert.throws(
+    () => chooseBotTurnChoice({ ...extreme, extremeSearchDepth: 51 }, 80, 6),
+    /search depth must be a whole number from 1 to 50/,
+  );
 });
 
 test('player views hide opponents towers but preserve public wind-topple data', () => {
@@ -601,7 +616,11 @@ test('protocol preserves per-player recovery credentials and submission state', 
 
   const robotState = {
     ...createMatch(player('host')),
-    players: [player('host'), player('robot', { isBot: true, botDifficulty: 'extreme' })],
+    players: [player('host'), player('robot', {
+      isBot: true,
+      botDifficulty: 'extreme',
+      extremeSearchDepth: 12,
+    })],
   };
   const robotUpdate = parseMessage(JSON.stringify({
     type: 'state',
@@ -611,6 +630,7 @@ test('protocol preserves per-player recovery credentials and submission state', 
   }));
   assert.equal(robotUpdate.type, 'state');
   assert.equal(robotUpdate.state.players[1].botDifficulty, 'extreme');
+  assert.equal(robotUpdate.state.players[1].extremeSearchDepth, 12);
   const legacyRobotState = {
     ...createMatch(player('host')),
     players: [player('host'), player('robot', { isBot: true })],
@@ -624,6 +644,15 @@ test('protocol preserves per-player recovery credentials and submission state', 
   assert.throws(() => parseMessage(JSON.stringify({
     type: 'state',
     state: { ...robotState, players: [robotState.players[0], { ...robotState.players[1], botDifficulty: 'expert' }] },
+    submittedCount: 0,
+    playerId: 'host',
+  })), /unsupported game message/);
+  assert.throws(() => parseMessage(JSON.stringify({
+    type: 'state',
+    state: {
+      ...robotState,
+      players: [robotState.players[0], { ...robotState.players[1], extremeSearchDepth: 51 }],
+    },
     submittedCount: 0,
     playerId: 'host',
   })), /unsupported game message/);
