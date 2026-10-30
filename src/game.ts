@@ -13,7 +13,7 @@ export interface Tower {
   toppled?: boolean;
 }
 
-export type BotDifficulty = 'easy' | 'normal' | 'hard';
+export type BotDifficulty = 'easy' | 'normal' | 'hard' | 'ultra' | 'extreme';
 
 export interface Player {
   id: string;
@@ -28,7 +28,7 @@ export interface Player {
 }
 
 export function isBotDifficulty(value: unknown): value is BotDifficulty {
-  return value === 'easy' || value === 'normal' || value === 'hard';
+  return value === 'easy' || value === 'normal' || value === 'hard' || value === 'ultra' || value === 'extreme';
 }
 
 export interface Placement {

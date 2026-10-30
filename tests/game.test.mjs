@@ -464,7 +464,7 @@ test('robots choose banking after rolling or choose building and allocate the ro
   assert.deepEqual(chooseBotTurnChoice(towersToBank, 80, 2), { kind: 'bank', towerIds: ['t1', 't2'] });
 });
 
-test('normal and hard robots weigh wind risk while easy keeps its simple strategy', () => {
+test('robots respect difficulty strategy and choose legal moves', () => {
   const towers = Array.from({ length: 4 }, (_, slot) => ({
     id: `t${slot}`,
     height: 5,
@@ -482,19 +482,69 @@ test('normal and hard robots weigh wind risk while easy keeps its simple strateg
     chooseBotTurnChoice(player('hard', { botDifficulty: 'hard', score: 7, towers: [{ id: 't1', height: 2, slot: 0 }] }), 10, 2),
     { kind: 'bank', towerIds: ['t1'] },
   );
+  assert.deepEqual(
+    chooseBotTurnChoice(player('ultra', { botDifficulty: 'ultra', score: 7, towers: [{ id: 't1', height: 2, slot: 0 }] }), 10, 2),
+    { kind: 'bank', towerIds: ['t1'] },
+  );
 
-  for (const difficulty of ['easy', 'normal', 'hard']) {
+  for (const difficulty of ['easy', 'normal', 'hard', 'ultra']) {
     const robot = player('robot', {
       isBot: true,
       botDifficulty: difficulty,
       towers: [{ id: 't1', height: 4, slot: 0 }, { id: 't2', height: 2, slot: 1 }],
     });
-    assert.equal(isLegalAction(robot, chooseBotBuildAction(robot, 6), 'build', 6), true);
+    assert.equal(isLegalAction(robot, chooseBotBuildAction(robot, 6, 80), 'build', 6), true);
     const choice = chooseBotTurnChoice(robot, 80, 6);
     if (choice.kind === 'bank') {
       assert.equal(isLegalAction(robot, { kind: 'bank', towerIds: choice.towerIds }, 'choose', 6), true);
     }
   }
+});
+
+test('Extreme Robot banks when an opponent can win this round', () => {
+  const extreme = player('extreme', {
+    score: 10,
+    botDifficulty: 'extreme',
+    towers: [{ id: 'own', height: 5, slot: 0 }],
+  });
+  const opponent = player('opponent', {
+    score: 75,
+    towers: [{ id: 'rival', height: 4, slot: 0 }],
+  });
+
+  assert.deepEqual(
+    chooseBotTurnChoice(extreme, 80, 1, [{ player: opponent, turnDie: 1 }]),
+    { kind: 'bank', towerIds: ['own'] },
+  );
+});
+
+test('Ultra Hard uses next-round wind and banking outcomes to plan its build', () => {
+  const towers = [0, 1, 2].map((slot) => ({ id: `t${slot}`, height: 1, slot }));
+  const hard = player('hard', { botDifficulty: 'hard', towers });
+  const ultra = player('ultra', { botDifficulty: 'ultra', towers });
+
+  assert.deepEqual(chooseBotBuildAction(hard, 6, 80), {
+    kind: 'build',
+    placements: [{ towerId: null, elements: 6, slot: 3 }],
+  });
+  assert.deepEqual(chooseBotBuildAction(ultra, 6, 80), {
+    kind: 'build',
+    placements: [
+      { towerId: 't2', elements: 2 },
+      { towerId: null, elements: 4, slot: 3 },
+    ],
+  });
+});
+
+test('Extreme Robot returns a legal build after its deeper search', () => {
+  const towers = [0, 1, 2].map((slot) => ({ id: `t${slot}`, height: 1, slot }));
+  const extreme = player('extreme', { botDifficulty: 'extreme', towers });
+  const choice = chooseBotTurnChoice(extreme, 80, 6);
+  assert.equal(choice.kind, 'build');
+  const action = choice.action;
+
+  assert.ok(action);
+  assert.equal(isLegalAction(extreme, action, 'build', 6), true);
 });
 
 test('player views hide opponents towers but preserve public wind-topple data', () => {
@@ -551,7 +601,7 @@ test('protocol preserves per-player recovery credentials and submission state', 
 
   const robotState = {
     ...createMatch(player('host')),
-    players: [player('host'), player('robot', { isBot: true, botDifficulty: 'hard' })],
+    players: [player('host'), player('robot', { isBot: true, botDifficulty: 'extreme' })],
   };
   const robotUpdate = parseMessage(JSON.stringify({
     type: 'state',
@@ -560,7 +610,7 @@ test('protocol preserves per-player recovery credentials and submission state', 
     playerId: 'host',
   }));
   assert.equal(robotUpdate.type, 'state');
-  assert.equal(robotUpdate.state.players[1].botDifficulty, 'hard');
+  assert.equal(robotUpdate.state.players[1].botDifficulty, 'extreme');
   const legacyRobotState = {
     ...createMatch(player('host')),
     players: [player('host'), player('robot', { isBot: true })],

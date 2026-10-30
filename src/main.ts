@@ -26,7 +26,12 @@ import {
   type PlayerAction,
   type Tower,
 } from './game';
-import { chooseBotBuildAction, chooseBotTurnChoice } from './bot';
+import {
+  chooseBotAction,
+  type BotDecisionRequest,
+  type BotDecisionResponse,
+  type BotOpponent,
+} from './bot';
 import { parseMessage, type PeerMessage } from './protocol';
 import { Peer, PeerError, PeerErrorType, type DataConnection } from 'peerjs';
 import { createRoomCode, formatRoomCode, normalizeRoomCode } from './room-code';
@@ -133,6 +138,10 @@ const shownPlayerRolls = new Set<string>();
 let lastRoundSkipPressAt: number | null = null;
 let lastRoundSkipPressRound: number | null = null;
 let botResolveTimer: number | null = null;
+let botDecisionStartedAt: number | null = null;
+let botDecisionGeneration = 0;
+const pendingBotDecisions = new Set<string>();
+const activeBotWorkerCancels = new Set<() => void>();
 
 const ROUND_WIND_DISPLAY_MS = 8_000;
 const ROUND_SKIP_DOUBLE_PRESS_MS = 1_000;
@@ -141,6 +150,8 @@ const BOT_DIFFICULTY_OPTIONS: { value: BotDifficulty; label: string }[] = [
   { value: 'easy', label: 'Easy' },
   { value: 'normal', label: 'Normal' },
   { value: 'hard', label: 'Hard' },
+  { value: 'ultra', label: 'Ultra Hard' },
+  { value: 'extreme', label: 'Extreme Robot' },
 ];
 const PLAYER_ROLL_REVEAL_MS = 2_800;
 const NOTICE_DISPLAY_MS = 5_000;
@@ -705,7 +716,7 @@ function renderHost(): string {
     <div class="lobby-robot-control">
       <button class="button button-secondary" data-action="add-robot" type="button" ${state.players.length >= MAX_PLAYERS ? 'disabled' : ''}>＋ Add a robot</button>
       <p class="quiet-note">Robots choose automatically. Add one to play solo or mix robots with guests.</p>
-      <p class="quiet-note">Set each robot to Easy, Normal, or Hard. Higher difficulties consider wind risk and compare more moves.</p>
+      <p class="quiet-note">Set each robot to Easy, Normal, Hard, Ultra Hard, or Extreme Robot. Extreme Robot searches further ahead, reacts to immediate winning threats, and can think for up to 7 seconds.</p>
     </div>
     <div class="pair-area">
       ${connectedPlayers(state).length >= MIN_PLAYERS
@@ -1225,21 +1236,131 @@ function broadcastState(): void {
   }
 }
 
-function submitBotActions(): void {
-  if (!hostState || hostState.status !== 'choice') return;
-  for (const player of hostState.players) {
-    if (!player.isBot || submitted.has(player.id)) continue;
-    const turn = hostState.roundTurnRolls.find((item) => item.playerId === player.id);
-    if (!turn || turn.choice !== 'choose') continue;
-    const turnDie = turn.die;
-    const choice = chooseBotTurnChoice(player, hostState.targetPoints, turnDie);
-    hostState = chooseTurnMode(hostState, player.id, choice.kind);
-    if (choice.kind === 'bank') {
-      submitted.set(player.id, choice);
-    } else {
-      submitted.set(player.id, chooseBotBuildAction(player, turnDie));
+async function submitBotActions(): Promise<void> {
+  const state = hostState;
+  if (!state || state.status !== 'choice') return;
+  const roundTurnRolls = state.roundTurnRolls;
+  const jobs = state.players.flatMap((player) => {
+    if (!player.isBot || submitted.has(player.id) || pendingBotDecisions.has(player.id)) return [];
+    const turn = roundTurnRolls.find((item) => item.playerId === player.id);
+    if (!turn || turn.choice !== 'choose') return [];
+    pendingBotDecisions.add(player.id);
+    const opponents: BotOpponent[] = state.players.flatMap((opponent) => {
+      if (opponent.id === player.id) return [];
+      const opponentTurn = roundTurnRolls.find((item) => item.playerId === opponent.id);
+      return opponentTurn ? [{ player: opponent, turnDie: opponentTurn.die }] : [];
+    });
+    const request: BotDecisionRequest = {
+      player,
+      targetPoints: state.targetPoints,
+      turnDie: turn.die,
+      opponents,
+    };
+    return [{ player, request }];
+  });
+  if (jobs.length === 0) return;
+
+  if (botDecisionStartedAt === null) botDecisionStartedAt = Date.now();
+  const generation = roomGeneration;
+  const decisionGeneration = botDecisionGeneration;
+  const round = state.round;
+  const results = await Promise.all(jobs.map(async ({ player, request }) => {
+    try {
+      return { playerId: player.id, action: await calculateBotActionInWorker(request) };
+    } catch (error) {
+      return {
+        playerId: player.id,
+        error: error instanceof Error ? error : new Error('Robot worker failed.'),
+      };
     }
+  }));
+  for (const { player } of jobs) pendingBotDecisions.delete(player.id);
+  if (
+    generation !== roomGeneration ||
+    decisionGeneration !== botDecisionGeneration ||
+    hostState?.status !== 'choice' ||
+    hostState.round !== round
+  ) return;
+
+  let usedFallback = false;
+  for (const result of results) {
+    const player = hostState.players.find((item) => item.id === result.playerId);
+    const turn = hostState.roundTurnRolls.find((item) => item.playerId === result.playerId);
+    if (!player?.isBot || !turn || turn.choice !== 'choose' || submitted.has(player.id)) continue;
+
+    let action: PlayerAction;
+    try {
+      if ('error' in result) {
+        usedFallback = true;
+        console.error(`Robot worker failed for ${player.name}; using a Hard-level fallback.`, result.error);
+        action = chooseBotAction({ ...player, botDifficulty: 'hard' }, state.targetPoints, turn.die);
+      } else {
+        action = result.action;
+      }
+      if (!isLegalAction(player, action, action.kind === 'build' ? 'build' : 'choose', turn.die)) {
+        usedFallback = true;
+        console.error(`Robot worker returned an illegal move for ${player.name}; using a Hard-level fallback.`);
+        action = chooseBotAction({ ...player, botDifficulty: 'hard' }, state.targetPoints, turn.die);
+      }
+      if (!isLegalAction(player, action, action.kind === 'build' ? 'build' : 'choose', turn.die)) {
+        throw new Error(`The fallback move for ${player.name} is not legal.`);
+      }
+    } catch (error) {
+      console.error(`Could not calculate a legal robot move for ${player.name}.`, error);
+      showFailure(error instanceof Error ? error.message : 'Could not calculate a legal robot move.');
+      return;
+    }
+
+    hostState = chooseTurnMode(hostState, player.id, action.kind);
+    submitted.set(player.id, action);
   }
+  if (usedFallback) showFailure('A robot worker failed; a Hard-level move was used for this turn.');
+  broadcastState();
+  render();
+  maybeResolveRound();
+}
+
+function calculateBotActionInWorker(request: BotDecisionRequest): Promise<PlayerAction> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./bot.worker.ts', import.meta.url), { type: 'module' });
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      activeBotWorkerCancels.delete(cancel);
+      worker.terminate();
+      callback();
+    };
+    const cancel = (): void => finish(() => reject(new Error('Robot decision canceled.')));
+    activeBotWorkerCancels.add(cancel);
+    worker.addEventListener('message', (event: MessageEvent<BotDecisionResponse>) => {
+      const response = event.data;
+      if ('error' in response) {
+        const message = response.error;
+        finish(() => reject(new Error(message)));
+      } else {
+        const action = response.action;
+        finish(() => resolve(action));
+      }
+    }, { once: true });
+    worker.addEventListener('error', (event) => {
+      event.preventDefault();
+      finish(() => reject(new Error(event.message || 'Robot worker encountered an error.')));
+    }, { once: true });
+    worker.addEventListener('messageerror', () => {
+      finish(() => reject(new Error('Could not read the robot worker response.')));
+    }, { once: true });
+    try {
+      worker.postMessage(request);
+    } catch (error) {
+      finish(() => reject(error instanceof Error ? error : new Error('Could not start the robot worker.')));
+    }
+  });
+}
+
+function cancelActiveBotWorkers(): void {
+  botDecisionGeneration += 1;
+  for (const cancel of [...activeBotWorkerCancels]) cancel();
 }
 
 function rollPendingTurns(): void {
@@ -1252,7 +1373,10 @@ function rollPendingTurns(): void {
       revealPlayerRoll(hostState.round, player.id, player.name, die);
     }
   }
-  submitBotActions();
+  void submitBotActions().catch((error: unknown) => {
+    console.error('Could not submit robot turns.', error);
+    showFailure(error instanceof Error ? error.message : 'Could not submit robot turns.');
+  });
 }
 
 function maybeResolveRound(): void {
@@ -1272,14 +1396,19 @@ function maybeResolveRound(): void {
   }
   broadcastState();
   render();
-  if (hostState.players.some((player) => player.isBot) && botResolveTimer === null) {
-    botResolveTimer = window.setTimeout(() => {
-      botResolveTimer = null;
-      resolveSubmittedRound();
-    }, BOT_TURN_DELAY_MS);
-    return;
+  if (hostState.players.some((player) => player.isBot)) {
+    if (botResolveTimer !== null) return;
+    if (botDecisionStartedAt === null) botDecisionStartedAt = Date.now();
+    const remainingDelay = Math.max(0, BOT_TURN_DELAY_MS - (Date.now() - botDecisionStartedAt));
+    if (remainingDelay > 0) {
+      botResolveTimer = window.setTimeout(() => {
+        botResolveTimer = null;
+        resolveSubmittedRound();
+      }, remainingDelay);
+      return;
+    }
   }
-  if (botResolveTimer === null) resolveSubmittedRound();
+  resolveSubmittedRound();
 }
 
 function resolveSubmittedRound(): void {
@@ -1299,6 +1428,7 @@ function resolveSubmittedRound(): void {
     hostState = resolveRound(hostState, actions, rollDice());
     submitted.clear();
     submittedCount = 0;
+    botDecisionStartedAt = null;
     selectedAllocations.clear();
     selectedBankTowerIds.clear();
     selectedTurnMode = null;
@@ -1623,8 +1753,11 @@ async function resumeHostRoom(): Promise<void> {
   if (!recovery) throw new Error('There is no saved host room to resume.');
   if (autoRollTimer !== null) window.clearTimeout(autoRollTimer);
   if (botResolveTimer !== null) window.clearTimeout(botResolveTimer);
+  cancelActiveBotWorkers();
+  pendingBotDecisions.clear();
   autoRollTimer = null;
   botResolveTimer = null;
+  botDecisionStartedAt = null;
   hostId = recovery.hostId;
   playerName = recovery.playerName;
   hostState = recovery.state;
@@ -1718,8 +1851,11 @@ function resetRoom(): void {
   const recoveryRole = screen === 'host' ? 'host' : screen === 'guest' ? 'guest' : null;
   if (autoRollTimer !== null) window.clearTimeout(autoRollTimer);
   if (botResolveTimer !== null) window.clearTimeout(botResolveTimer);
+  cancelActiveBotWorkers();
+  pendingBotDecisions.clear();
   autoRollTimer = null;
   botResolveTimer = null;
+  botDecisionStartedAt = null;
   roomGeneration += 1;
   creatingRoomCode = false;
   hostState = null;
