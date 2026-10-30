@@ -796,8 +796,13 @@ function roundRollBarMarkup(state: MatchState, readyCount: number, isHost: boole
       const roll = state.roundTurnRolls.find((turn) => turn.playerId === player.id);
       const animateRoll = state.rollAnimationEnabled !== false && !!roll && !animatedRollPlayers.has(player.id);
       if (animateRoll) animatedRollPlayers.add(player.id);
+      const rollStatus = !roll
+          ? ''
+          : player.isBot && roll.choice === 'choose'
+            ? localizeText('Thinking…', language)
+            : localizeText(`${roll.die} pips · ${roll.choice === 'choose' ? 'choosing' : roll.choice}`, language);
       const result = roll
-        ? `<span class="round-roll-die ${animateRoll ? 'round-roll-die-rolling' : ''}">${dieMarkup(roll.die)}</span><small>${localizeText(`${roll.die} pips · ${roll.choice === 'choose' ? 'choosing' : roll.choice}`, language)}</small>`
+          ? `<span class="round-roll-die ${animateRoll ? 'round-roll-die-rolling' : ''}">${dieMarkup(roll.die)}</span><small>${rollStatus}</small>`
           : '<span class="round-roll-pending">—</span><small>Choosing</small>';
       const pointsEarned = showRoundScores
         ? latestRound?.pointsEarned?.find((entry) => entry.playerId === player.id)?.points

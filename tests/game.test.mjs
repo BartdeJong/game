@@ -77,6 +77,7 @@ test('localizes interface text in the supported languages and preserves English'
   assert.equal(localizeText('Bot difficulty', 'nl'), 'Robotmoeilijkheid');
   assert.equal(localizeText('Easy', 'nl'), 'Makkelijk');
   assert.equal(localizeText('Hard', 'fr'), 'Difficile');
+  assert.equal(localizeText('Thinking…', 'nl'), 'Denkt na…');
   assert.equal(localizeText('Animate dice rolls', 'nl'), 'Dobbelsteenworpen animeren');
   assert.match(localizeText('When off, rolls stay visible but skip the full-screen reveal and die animation.', 'de'), /Vollbildanzeige/);
   assert.equal(localizeText('Roll a die first', 'nl'), 'Gooi eerst een dobbelsteen');
