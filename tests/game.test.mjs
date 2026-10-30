@@ -618,6 +618,18 @@ test('Extreme Robot reports its completed search depth, including immediate deci
   assert.equal(decision.extremeSearchDepthUsed, 0);
 });
 
+test('Extreme Robot honors a configured depth beyond the default', () => {
+  const configuredDepth = DEFAULT_EXTREME_SEARCH_DEPTH + 1;
+  const extreme = player('extreme', {
+    botDifficulty: 'extreme',
+    extremeSearchDepth: configuredDepth,
+  });
+  assert.equal(
+    chooseBotActionWithDetails(extreme, 80, 3).extremeSearchDepthUsed,
+    configuredDepth,
+  );
+});
+
 test('Extreme Robot forecasts opponents while returning a legal action', () => {
   const extreme = player('extreme', {
     botDifficulty: 'extreme',

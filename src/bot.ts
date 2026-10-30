@@ -32,6 +32,11 @@ interface RankedAction {
   value: StrategicValue;
 }
 
+interface FutureTurnOptions {
+  bank: BankCandidate | null;
+  build: PlayerAction;
+}
+
 export interface BotOpponent {
   player: Player;
   turnDie: number;
@@ -455,11 +460,13 @@ function chooseExtremeAction(
   const valuesByAction = new Map<PlayerAction, StrategicValue[]>(
     searchActions.map((action) => [action, []]),
   );
+  // Depth is part of the search caches' keys, so horizons can safely share completed states.
+  const extremeCache = new Map<string, StrategicValue>();
+  const windCache = new Map<string, StrategicValue>();
+  const futureCache = new Map<string, StrategicValue>();
+  const futureTurnCache = new Map<string, FutureTurnOptions>();
 
   for (let depth = 1; depth <= maxDepth; depth += 1) {
-    const extremeCache = new Map<string, StrategicValue>();
-    const windCache = new Map<string, StrategicValue>();
-    const futureCache = new Map<string, StrategicValue>();
     for (const action of searchActions) {
       const value = evaluateExtremeAction(
         player,
@@ -469,6 +476,7 @@ function chooseExtremeAction(
         extremeCache,
         windCache,
         futureCache,
+        futureTurnCache,
       );
       valuesByAction.get(action)!.push(value);
     }
@@ -701,6 +709,7 @@ function evaluateExtremeAction(
   extremeCache: Map<string, StrategicValue>,
   windCache: Map<string, StrategicValue>,
   futureCache: Map<string, StrategicValue>,
+  futureTurnCache: Map<string, FutureTurnOptions>,
 ): StrategicValue {
   let bankedPoints = 0;
   let towers: Tower[];
@@ -734,6 +743,7 @@ function evaluateExtremeAction(
       extremeCache,
       windCache,
       futureCache,
+      futureTurnCache,
     );
     winProbability += frequency * future.winProbability;
     points += frequency * future.points;
@@ -753,6 +763,7 @@ function evaluateExtremeAfterWind(
   extremeCache: Map<string, StrategicValue>,
   windCache: Map<string, StrategicValue>,
   futureCache: Map<string, StrategicValue>,
+  futureTurnCache: Map<string, FutureTurnOptions>,
 ): StrategicValue {
   if (depth === 0) return evaluateNextTurn(player, towers, score, targetPoints, futureCache);
   const key = `${depth}:${strategicStateKey(towers, score)}`;
@@ -767,8 +778,7 @@ function evaluateExtremeAfterWind(
   let winProbability = 0;
   let points = 0;
   for (let die = 1; die <= 6; die += 1) {
-    const bank = chooseBestBank(futurePlayer, targetPoints, die);
-    const build = chooseHardBuildAction(futurePlayer, die);
+    const { bank, build } = getFutureTurnOptions(futurePlayer, targetPoints, die, futureTurnCache);
     const buildValue = evaluateAfterFutureWind(
       player,
       towersAfterBuild(futurePlayer, build),
@@ -778,6 +788,7 @@ function evaluateExtremeAfterWind(
       extremeCache,
       windCache,
       futureCache,
+      futureTurnCache,
     );
 
     let turnValue = buildValue;
@@ -794,6 +805,7 @@ function evaluateExtremeAfterWind(
         extremeCache,
         windCache,
         futureCache,
+        futureTurnCache,
       );
       const bankValue = {
         winProbability: bankContinuation.winProbability,
@@ -818,6 +830,7 @@ function evaluateAfterFutureWind(
   extremeCache: Map<string, StrategicValue>,
   windCache: Map<string, StrategicValue>,
   futureCache: Map<string, StrategicValue>,
+  futureTurnCache: Map<string, FutureTurnOptions>,
 ): StrategicValue {
   const key = `${remainingDepth}:${strategicStateKey(towers, score)}`;
   const cached = windCache.get(key);
@@ -842,6 +855,7 @@ function evaluateAfterFutureWind(
         extremeCache,
         windCache,
         futureCache,
+        futureTurnCache,
       );
     winProbability += frequency * future.winProbability;
     points += frequency * future.points;
@@ -849,6 +863,28 @@ function evaluateAfterFutureWind(
   const value = { winProbability: winProbability / 36, points: points / 36 };
   windCache.set(key, value);
   return value;
+}
+
+function getFutureTurnOptions(
+  player: Player,
+  targetPoints: number,
+  turnDie: number,
+  cache: Map<string, FutureTurnOptions>,
+): FutureTurnOptions {
+  const towersKey = player.towers
+    .map((tower) => `${tower.id}:${tower.height}:${tower.slot ?? ''}`)
+    .sort()
+    .join(',');
+  const key = `${player.score}:${targetPoints}:${turnDie}:${towersKey}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+
+  const options = {
+    bank: chooseBestBank(player, targetPoints, turnDie),
+    build: chooseHardBuildAction(player, turnDie),
+  };
+  cache.set(key, options);
+  return options;
 }
 
 function isBetterStrategicValue(candidate: StrategicValue, current: StrategicValue): boolean {
