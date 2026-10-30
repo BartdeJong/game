@@ -296,6 +296,8 @@ textarea { resize: vertical; }
 .player-row-bot .player-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bot-difficulty-control { flex: 0 0 88px; }
 .bot-difficulty-select { width: 100%; min-height: 36px; padding: 6px 22px 6px 8px; font-size: .72rem; }
+.bot-search-depth-control { display: flex; flex: 0 0 88px; align-items: center; gap: 4px; color: var(--muted); font-size: .65rem; }
+.bot-search-depth-input { width: 48px; min-height: 36px; padding: 5px 3px; font-size: .72rem; text-align: center; }
 .room-win-tag { display: inline-block; margin-left: 9px; color: var(--muted); font: .62rem var(--mono); white-space: nowrap; }
 .you-tag, .host-tag, .robot-tag { margin-left: 5px; color: var(--lime); font: .58rem var(--mono); letter-spacing: .06em; }
 .host-tag { color: #9db5a7; }
@@ -585,6 +587,8 @@ textarea { resize: vertical; }
   .player-row-bot { gap: 7px; padding: 8px; }
   .player-row-bot .bot-difficulty-control { flex-basis: 82px; }
   .player-row-bot .bot-difficulty-select { min-height: 34px; padding: 5px 20px 5px 7px; font-size: .68rem; }
+  .player-row-bot .bot-search-depth-control { flex-basis: 78px; gap: 3px; }
+  .player-row-bot .bot-search-depth-input { width: 42px; min-height: 34px; }
   .tower-board { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; overflow-x: hidden; padding-bottom: 0; }
   .button-row > .button { flex: 1; }
 }

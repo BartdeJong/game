@@ -1,6 +1,8 @@
 import {
   heightLimit,
   DEFAULT_WIN_POINTS,
+  DEFAULT_EXTREME_SEARCH_DEPTH,
+  isExtremeSearchDepth,
   MAX_TOWERS,
   towerPoints,
   towerShield,
@@ -42,14 +44,6 @@ export type BotDecisionResponse =
   | { error: string };
 
 const WIND_SUM_COUNTS = [1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1];
-const EXTREME_SEARCH_BUDGET_MS = 7_000;
-const EXTREME_MAX_SEARCH_DEPTH = 50;
-
-interface SearchBudget {
-  deadline: number;
-}
-
-class SearchDeadlineReached extends Error {}
 
 export function chooseBotTurnChoice(
   player: Player,
@@ -396,14 +390,17 @@ function chooseExtremeAction(
     return bestBank ?? chooseHardBuildAction(player, turnDie);
   }
 
-  const budget = { deadline: Date.now() + EXTREME_SEARCH_BUDGET_MS };
+  const maxDepth = player.extremeSearchDepth ?? DEFAULT_EXTREME_SEARCH_DEPTH;
+  if (!isExtremeSearchDepth(maxDepth)) {
+    throw new Error('Extreme Robot search depth must be a whole number from 1 to 500.');
+  }
   let bestAction = chooseUltraAction(player, targetPoints, turnDie, includeBanking);
   const actions = enumerateBuildActions(player, turnDie);
   if (includeBanking) {
     actions.push(...enumerateBankActions(player, turnDie));
   }
 
-  for (let depth = 1; depth <= EXTREME_MAX_SEARCH_DEPTH && Date.now() < budget.deadline; depth += 1) {
+  for (let depth = 1; depth <= maxDepth; depth += 1) {
     const extremeCache = new Map<string, StrategicValue>();
     const windCache = new Map<string, StrategicValue>();
     const futureCache = new Map<string, StrategicValue>();
@@ -411,37 +408,30 @@ function chooseExtremeAction(
     let iterationBestValue: StrategicValue | null = null;
     let iterationBestFloors = -1;
 
-    try {
-      for (const action of actions) {
-        checkSearchBudget(budget);
-        const value = evaluateExtremeAction(
-          player,
-          action,
-          targetPoints,
-          depth,
-          budget,
-          extremeCache,
-          windCache,
-          futureCache,
-        );
-        const floors = action.kind === 'build'
-          ? action.placements.reduce((total, placement) => total + placement.elements, 0)
-          : -1;
-        if (
-          !iterationBestValue ||
-          isBetterStrategicValue(value, iterationBestValue) ||
-          (!isBetterStrategicValue(iterationBestValue, value) &&
-            action.kind === 'build' &&
-            floors > iterationBestFloors)
-        ) {
-          iterationBestAction = action;
-          iterationBestValue = value;
-          iterationBestFloors = floors;
-        }
+    for (const action of actions) {
+      const value = evaluateExtremeAction(
+        player,
+        action,
+        targetPoints,
+        depth,
+        extremeCache,
+        windCache,
+        futureCache,
+      );
+      const floors = action.kind === 'build'
+        ? action.placements.reduce((total, placement) => total + placement.elements, 0)
+        : -1;
+      if (
+        !iterationBestValue ||
+        isBetterStrategicValue(value, iterationBestValue) ||
+        (!isBetterStrategicValue(iterationBestValue, value) &&
+          action.kind === 'build' &&
+          floors > iterationBestFloors)
+      ) {
+        iterationBestAction = action;
+        iterationBestValue = value;
+        iterationBestFloors = floors;
       }
-    } catch (error) {
-      if (!(error instanceof SearchDeadlineReached)) throw error;
-      break;
     }
 
     if (iterationBestAction) bestAction = iterationBestAction;
@@ -472,7 +462,6 @@ function evaluateExtremeAction(
   action: PlayerAction,
   targetPoints: number,
   depth: number,
-  budget: SearchBudget,
   extremeCache: Map<string, StrategicValue>,
   windCache: Map<string, StrategicValue>,
   futureCache: Map<string, StrategicValue>,
@@ -496,7 +485,6 @@ function evaluateExtremeAction(
   let winProbability = 0;
   let points = 0;
   for (let wind = 2; wind <= 12; wind += 1) {
-    checkSearchBudget(budget);
     const frequency = WIND_SUM_COUNTS[wind - 2]!;
     const survivors = towers
       .filter((tower) => wind < heightLimit(tower.height) + shield)
@@ -507,7 +495,6 @@ function evaluateExtremeAction(
       player.score + bankedPoints,
       targetPoints,
       depth,
-      budget,
       extremeCache,
       windCache,
       futureCache,
@@ -527,12 +514,10 @@ function evaluateExtremeAfterWind(
   score: number,
   targetPoints: number,
   depth: number,
-  budget: SearchBudget,
   extremeCache: Map<string, StrategicValue>,
   windCache: Map<string, StrategicValue>,
   futureCache: Map<string, StrategicValue>,
 ): StrategicValue {
-  checkSearchBudget(budget);
   if (depth === 0) return evaluateNextTurn(player, towers, score, targetPoints, futureCache);
   const key = `${depth}:${strategicStateKey(towers, score)}`;
   const cached = extremeCache.get(key);
@@ -546,7 +531,6 @@ function evaluateExtremeAfterWind(
   let winProbability = 0;
   let points = 0;
   for (let die = 1; die <= 6; die += 1) {
-    checkSearchBudget(budget);
     const bank = chooseBestBank(futurePlayer, targetPoints, die);
     const build = chooseNormalBuildAction(futurePlayer, die);
     const buildValue = evaluateAfterFutureWind(
@@ -555,7 +539,6 @@ function evaluateExtremeAfterWind(
       score,
       targetPoints,
       depth - 1,
-      budget,
       extremeCache,
       windCache,
       futureCache,
@@ -572,7 +555,6 @@ function evaluateExtremeAfterWind(
         score + bank.points,
         targetPoints,
         depth - 1,
-        budget,
         extremeCache,
         windCache,
         futureCache,
@@ -597,7 +579,6 @@ function evaluateAfterFutureWind(
   score: number,
   targetPoints: number,
   remainingDepth: number,
-  budget: SearchBudget,
   extremeCache: Map<string, StrategicValue>,
   windCache: Map<string, StrategicValue>,
   futureCache: Map<string, StrategicValue>,
@@ -610,7 +591,6 @@ function evaluateAfterFutureWind(
   let winProbability = 0;
   let points = 0;
   for (let wind = 2; wind <= 12; wind += 1) {
-    checkSearchBudget(budget);
     const frequency = WIND_SUM_COUNTS[wind - 2]!;
     const survivors = towers
       .filter((tower) => wind < heightLimit(tower.height) + shield)
@@ -623,7 +603,6 @@ function evaluateAfterFutureWind(
         score,
         targetPoints,
         remainingDepth,
-        budget,
         extremeCache,
         windCache,
         futureCache,
@@ -644,10 +623,6 @@ function isBetterStrategicValue(candidate: StrategicValue, current: StrategicVal
 
 function strategicStateKey(towers: readonly Tower[], score: number): string {
   return `${score}:${towers.map((tower) => tower.height).sort((a, b) => a - b).join(',')}`;
-}
-
-function checkSearchBudget(budget: SearchBudget): void {
-  if (Date.now() >= budget.deadline) throw new SearchDeadlineReached();
 }
 
 function canonicalTowerOrder(towers: readonly Tower[]): Tower[] {

@@ -4,6 +4,7 @@ import {
   MAX_WIN_POINTS,
   MIN_WIN_POINTS,
   isBotDifficulty,
+  isExtremeSearchDepth,
   type MatchState,
   type PlayerAction,
 } from './game.js';
@@ -188,7 +189,9 @@ function isPlayerState(value: unknown): boolean {
     value.towers.length > MAX_TOWERS ||
     ('isBot' in value && typeof value.isBot !== 'boolean') ||
     ('botDifficulty' in value &&
-      (!('isBot' in value) || value.isBot !== true || !isBotDifficulty(value.botDifficulty)))
+      (!('isBot' in value) || value.isBot !== true || !isBotDifficulty(value.botDifficulty))) ||
+    ('extremeSearchDepth' in value &&
+      (!('isBot' in value) || value.isBot !== true || !isExtremeSearchDepth(value.extremeSearchDepth)))
   ) return false;
   const slots = new Set<number>();
   return value.towers.every((tower, index) => {
