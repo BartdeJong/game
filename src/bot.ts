@@ -43,7 +43,7 @@ export type BotDecisionResponse =
 
 const WIND_SUM_COUNTS = [1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1];
 const EXTREME_SEARCH_BUDGET_MS = 7_000;
-const EXTREME_MAX_SEARCH_DEPTH = 8;
+const EXTREME_MAX_SEARCH_DEPTH = 50;
 
 interface SearchBudget {
   deadline: number;
