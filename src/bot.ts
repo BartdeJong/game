@@ -1,5 +1,6 @@
 import {
   heightLimit,
+  DEFAULT_WIN_POINTS,
   MAX_TOWERS,
   towerPoints,
   towerShield,
@@ -9,7 +10,7 @@ import {
 } from './game.js';
 
 export type BotTurnChoice =
-  | { kind: 'build' }
+  | { kind: 'build'; action?: PlayerAction }
   | { kind: 'bank'; towerIds: string[] };
 
 interface BankCandidate {
@@ -19,15 +20,61 @@ interface BankCandidate {
   value: number;
 }
 
-const WIND_SUM_COUNTS = [1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1];
+interface StrategicValue {
+  winProbability: number;
+  points: number;
+}
 
-export function chooseBotTurnChoice(player: Player, targetPoints: number, turnDie: number): BotTurnChoice {
+export interface BotOpponent {
+  player: Player;
+  turnDie: number;
+}
+
+export interface BotDecisionRequest {
+  player: Player;
+  targetPoints: number;
+  turnDie: number;
+  opponents: BotOpponent[];
+}
+
+export type BotDecisionResponse =
+  | { action: PlayerAction }
+  | { error: string };
+
+const WIND_SUM_COUNTS = [1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1];
+const EXTREME_SEARCH_BUDGET_MS = 7_000;
+const EXTREME_MAX_SEARCH_DEPTH = 8;
+
+interface SearchBudget {
+  deadline: number;
+}
+
+class SearchDeadlineReached extends Error {}
+
+export function chooseBotTurnChoice(
+  player: Player,
+  targetPoints: number,
+  turnDie: number,
+  opponents: readonly BotOpponent[] = [],
+): BotTurnChoice {
   if (!Number.isInteger(targetPoints) || targetPoints < 1) {
     throw new Error('Robot target must be a positive whole number.');
   }
   validateBotDie(turnDie);
   const difficulty = player.botDifficulty ?? 'normal';
   if (difficulty === 'easy') return chooseEasyTurnChoice(player, targetPoints, turnDie);
+  if (difficulty === 'ultra') {
+    const action = chooseUltraAction(player, targetPoints, turnDie);
+    return action.kind === 'bank'
+      ? { kind: 'bank', towerIds: action.towerIds }
+      : { kind: 'build' };
+  }
+  if (difficulty === 'extreme') {
+    const action = chooseExtremeAction(player, targetPoints, turnDie, opponents);
+    return action.kind === 'bank'
+      ? { kind: 'bank', towerIds: action.towerIds }
+      : { kind: 'build', action };
+  }
 
   const buildAction = difficulty === 'hard'
     ? chooseHardBuildAction(player, turnDie)
@@ -38,13 +85,31 @@ export function chooseBotTurnChoice(player: Player, targetPoints: number, turnDi
   return { kind: 'bank', towerIds: bank.towerIds };
 }
 
-export function chooseBotBuildAction(player: Player, turnDie: number): PlayerAction {
+export function chooseBotBuildAction(
+  player: Player,
+  turnDie: number,
+  targetPoints = DEFAULT_WIN_POINTS,
+  opponents: readonly BotOpponent[] = [],
+): PlayerAction {
   validateBotDie(turnDie);
   const difficulty = player.botDifficulty ?? 'normal';
   if (difficulty === 'easy') return chooseEasyBuildAction(player, turnDie);
+  if (difficulty === 'ultra') return chooseUltraAction(player, targetPoints, turnDie, false);
+  if (difficulty === 'extreme') return chooseExtremeAction(player, targetPoints, turnDie, opponents, false);
   return difficulty === 'hard'
     ? chooseHardBuildAction(player, turnDie)
     : chooseNormalBuildAction(player, turnDie);
+}
+
+export function chooseBotAction(
+  player: Player,
+  targetPoints: number,
+  turnDie: number,
+  opponents: readonly BotOpponent[] = [],
+): PlayerAction {
+  const choice = chooseBotTurnChoice(player, targetPoints, turnDie, opponents);
+  if (choice.kind === 'bank') return choice;
+  return choice.action ?? chooseBotBuildAction(player, turnDie, targetPoints, opponents);
 }
 
 function validateBotDie(turnDie: number): void {
@@ -224,6 +289,458 @@ function chooseHardBuildAction(player: Player, turnDie: number): PlayerAction {
   enumerate(0, turnDie);
   if (!bestAction) throw new Error('Robot could not find a legal building target.');
   return bestAction;
+}
+
+function chooseUltraAction(
+  player: Player,
+  targetPoints: number,
+  turnDie: number,
+  includeBanking = true,
+): PlayerAction {
+  const futureCache = new Map<string, StrategicValue>();
+  let bestAction: PlayerAction | null = null;
+  let bestValue: StrategicValue | null = null;
+  let bestFloors = -1;
+
+  const consider = (action: PlayerAction): void => {
+    const value = evaluateUltraAction(player, action, targetPoints, futureCache);
+    const floors = action.kind === 'build'
+      ? action.placements.reduce((total, placement) => total + placement.elements, 0)
+      : -1;
+    if (
+      !bestValue ||
+      value.winProbability > bestValue.winProbability + 1e-9 ||
+      (Math.abs(value.winProbability - bestValue.winProbability) <= 1e-9 &&
+        value.points > bestValue.points + 1e-9) ||
+      (Math.abs(value.winProbability - bestValue.winProbability) <= 1e-9 &&
+        Math.abs(value.points - bestValue.points) <= 1e-9 &&
+        action.kind === 'build' &&
+        floors > bestFloors)
+    ) {
+      bestAction = action;
+      bestValue = value;
+      bestFloors = floors;
+    }
+  };
+
+  for (const action of enumerateBuildActions(player, turnDie)) consider(action);
+  if (includeBanking) {
+    for (const action of enumerateBankActions(player, turnDie)) consider(action);
+  }
+  if (!bestAction) throw new Error('Robot could not find a legal turn action.');
+  return bestAction;
+}
+
+function evaluateUltraAction(
+  player: Player,
+  action: PlayerAction,
+  targetPoints: number,
+  futureCache: Map<string, StrategicValue>,
+): StrategicValue {
+  let bankedPoints = 0;
+  let towers: Tower[];
+  if (action.kind === 'bank') {
+    const selected = new Set(action.towerIds);
+    towers = player.towers.filter((tower) => !selected.has(tower.id)).map((tower) => ({ ...tower }));
+    bankedPoints = player.towers
+      .filter((tower) => selected.has(tower.id))
+      .reduce((total, tower) => total + towerPoints(tower.height), 0);
+    if (player.score + bankedPoints >= targetPoints) {
+      return { winProbability: 1, points: bankedPoints };
+    }
+  } else {
+    towers = towersAfterBuild(player, action);
+  }
+
+  const shield = towerShield(towers.length);
+  let winProbability = 0;
+  let futurePoints = 0;
+  for (let wind = 2; wind <= 12; wind += 1) {
+    const frequency = WIND_SUM_COUNTS[wind - 2]!;
+    const survivors = towers
+      .filter((tower) => wind < heightLimit(tower.height) + shield)
+      .map((tower) => ({ ...tower }));
+    const future = evaluateNextTurn(player, survivors, player.score + bankedPoints, targetPoints, futureCache);
+    winProbability += frequency * future.winProbability;
+    futurePoints += frequency * future.points;
+  }
+  return {
+    winProbability: winProbability / 36,
+    points: bankedPoints + futurePoints / 36,
+  };
+}
+
+function chooseExtremeAction(
+  player: Player,
+  targetPoints: number,
+  turnDie: number,
+  opponents: readonly BotOpponent[],
+  includeBanking = true,
+): PlayerAction {
+  const opponentWinningScore = includeBanking
+    ? predictImmediateOpponentWin(player, opponents, targetPoints)
+    : null;
+  if (opponentWinningScore !== null) {
+    let bestBank: PlayerAction | null = null;
+    let bestPoints = -1;
+    for (const action of enumerateBankActions(player, turnDie)) {
+      if (action.kind !== 'bank') continue;
+      const points = player.towers
+        .filter((tower) => action.towerIds.includes(tower.id))
+        .reduce((total, tower) => total + towerPoints(tower.height), 0);
+      if (points > bestPoints) {
+        bestBank = action;
+        bestPoints = points;
+      }
+    }
+    return bestBank ?? chooseHardBuildAction(player, turnDie);
+  }
+
+  const budget = { deadline: Date.now() + EXTREME_SEARCH_BUDGET_MS };
+  let bestAction = chooseUltraAction(player, targetPoints, turnDie, includeBanking);
+  const actions = enumerateBuildActions(player, turnDie);
+  if (includeBanking) {
+    actions.push(...enumerateBankActions(player, turnDie));
+  }
+
+  for (let depth = 1; depth <= EXTREME_MAX_SEARCH_DEPTH && Date.now() < budget.deadline; depth += 1) {
+    const extremeCache = new Map<string, StrategicValue>();
+    const windCache = new Map<string, StrategicValue>();
+    const futureCache = new Map<string, StrategicValue>();
+    let iterationBestAction: PlayerAction | null = null;
+    let iterationBestValue: StrategicValue | null = null;
+    let iterationBestFloors = -1;
+
+    try {
+      for (const action of actions) {
+        checkSearchBudget(budget);
+        const value = evaluateExtremeAction(
+          player,
+          action,
+          targetPoints,
+          depth,
+          budget,
+          extremeCache,
+          windCache,
+          futureCache,
+        );
+        const floors = action.kind === 'build'
+          ? action.placements.reduce((total, placement) => total + placement.elements, 0)
+          : -1;
+        if (
+          !iterationBestValue ||
+          isBetterStrategicValue(value, iterationBestValue) ||
+          (!isBetterStrategicValue(iterationBestValue, value) &&
+            action.kind === 'build' &&
+            floors > iterationBestFloors)
+        ) {
+          iterationBestAction = action;
+          iterationBestValue = value;
+          iterationBestFloors = floors;
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof SearchDeadlineReached)) throw error;
+      break;
+    }
+
+    if (iterationBestAction) bestAction = iterationBestAction;
+  }
+  return bestAction;
+}
+
+function predictImmediateOpponentWin(
+  player: Player,
+  opponents: readonly BotOpponent[],
+  targetPoints: number,
+): number | null {
+  let highestWinningScore: number | null = null;
+  for (const opponent of opponents) {
+    if (opponent.player.id === player.id) continue;
+    validateBotDie(opponent.turnDie);
+    const bank = chooseBestBank(opponent.player, targetPoints, opponent.turnDie);
+    if (bank?.wins) {
+      const score = opponent.player.score + bank.points;
+      highestWinningScore = Math.max(highestWinningScore ?? score, score);
+    }
+  }
+  return highestWinningScore;
+}
+
+function evaluateExtremeAction(
+  player: Player,
+  action: PlayerAction,
+  targetPoints: number,
+  depth: number,
+  budget: SearchBudget,
+  extremeCache: Map<string, StrategicValue>,
+  windCache: Map<string, StrategicValue>,
+  futureCache: Map<string, StrategicValue>,
+): StrategicValue {
+  let bankedPoints = 0;
+  let towers: Tower[];
+  if (action.kind === 'bank') {
+    const selected = new Set(action.towerIds);
+    towers = player.towers.filter((tower) => !selected.has(tower.id)).map((tower) => ({ ...tower }));
+    bankedPoints = player.towers
+      .filter((tower) => selected.has(tower.id))
+      .reduce((total, tower) => total + towerPoints(tower.height), 0);
+    if (player.score + bankedPoints >= targetPoints) {
+      return { winProbability: 1, points: bankedPoints };
+    }
+  } else {
+    towers = towersAfterBuild(player, action);
+  }
+
+  const shield = towerShield(towers.length);
+  let winProbability = 0;
+  let points = 0;
+  for (let wind = 2; wind <= 12; wind += 1) {
+    checkSearchBudget(budget);
+    const frequency = WIND_SUM_COUNTS[wind - 2]!;
+    const survivors = towers
+      .filter((tower) => wind < heightLimit(tower.height) + shield)
+      .map((tower) => ({ ...tower }));
+    const future = evaluateExtremeAfterWind(
+      player,
+      survivors,
+      player.score + bankedPoints,
+      targetPoints,
+      depth,
+      budget,
+      extremeCache,
+      windCache,
+      futureCache,
+    );
+    winProbability += frequency * future.winProbability;
+    points += frequency * future.points;
+  }
+  return {
+    winProbability: winProbability / 36,
+    points: bankedPoints + points / 36,
+  };
+}
+
+function evaluateExtremeAfterWind(
+  player: Player,
+  towers: Tower[],
+  score: number,
+  targetPoints: number,
+  depth: number,
+  budget: SearchBudget,
+  extremeCache: Map<string, StrategicValue>,
+  windCache: Map<string, StrategicValue>,
+  futureCache: Map<string, StrategicValue>,
+): StrategicValue {
+  checkSearchBudget(budget);
+  if (depth === 0) return evaluateNextTurn(player, towers, score, targetPoints, futureCache);
+  const key = `${depth}:${strategicStateKey(towers, score)}`;
+  const cached = extremeCache.get(key);
+  if (cached) return cached;
+
+  const futurePlayer: Player = {
+    ...player,
+    score,
+    towers: canonicalTowerOrder(towers).map((tower, index) => ({ ...tower, slot: index })),
+  };
+  let winProbability = 0;
+  let points = 0;
+  for (let die = 1; die <= 6; die += 1) {
+    checkSearchBudget(budget);
+    const bank = chooseBestBank(futurePlayer, targetPoints, die);
+    const build = chooseNormalBuildAction(futurePlayer, die);
+    const buildValue = evaluateAfterFutureWind(
+      player,
+      towersAfterBuild(futurePlayer, build),
+      score,
+      targetPoints,
+      depth - 1,
+      budget,
+      extremeCache,
+      windCache,
+      futureCache,
+    );
+
+    let turnValue = buildValue;
+    if (bank?.wins) {
+      turnValue = { winProbability: 1, points: bank.points };
+    } else if (bank) {
+      const remaining = futurePlayer.towers.filter((tower) => !bank.towerIds.includes(tower.id));
+      const bankContinuation = evaluateAfterFutureWind(
+        player,
+        remaining,
+        score + bank.points,
+        targetPoints,
+        depth - 1,
+        budget,
+        extremeCache,
+        windCache,
+        futureCache,
+      );
+      const bankValue = {
+        winProbability: bankContinuation.winProbability,
+        points: bank.points + bankContinuation.points,
+      };
+      if (isBetterStrategicValue(bankValue, buildValue)) turnValue = bankValue;
+    }
+    winProbability += turnValue.winProbability;
+    points += turnValue.points;
+  }
+  const value = { winProbability: winProbability / 6, points: points / 6 };
+  extremeCache.set(key, value);
+  return value;
+}
+
+function evaluateAfterFutureWind(
+  player: Player,
+  towers: Tower[],
+  score: number,
+  targetPoints: number,
+  remainingDepth: number,
+  budget: SearchBudget,
+  extremeCache: Map<string, StrategicValue>,
+  windCache: Map<string, StrategicValue>,
+  futureCache: Map<string, StrategicValue>,
+): StrategicValue {
+  const key = `${remainingDepth}:${strategicStateKey(towers, score)}`;
+  const cached = windCache.get(key);
+  if (cached) return cached;
+
+  const shield = towerShield(towers.length);
+  let winProbability = 0;
+  let points = 0;
+  for (let wind = 2; wind <= 12; wind += 1) {
+    checkSearchBudget(budget);
+    const frequency = WIND_SUM_COUNTS[wind - 2]!;
+    const survivors = towers
+      .filter((tower) => wind < heightLimit(tower.height) + shield)
+      .map((tower) => ({ ...tower }));
+    const future = remainingDepth === 0
+      ? evaluateNextTurn(player, survivors, score, targetPoints, futureCache)
+      : evaluateExtremeAfterWind(
+        player,
+        survivors,
+        score,
+        targetPoints,
+        remainingDepth,
+        budget,
+        extremeCache,
+        windCache,
+        futureCache,
+      );
+    winProbability += frequency * future.winProbability;
+    points += frequency * future.points;
+  }
+  const value = { winProbability: winProbability / 36, points: points / 36 };
+  windCache.set(key, value);
+  return value;
+}
+
+function isBetterStrategicValue(candidate: StrategicValue, current: StrategicValue): boolean {
+  return candidate.winProbability > current.winProbability + 1e-9 ||
+    (Math.abs(candidate.winProbability - current.winProbability) <= 1e-9 &&
+      candidate.points > current.points + 1e-9);
+}
+
+function strategicStateKey(towers: readonly Tower[], score: number): string {
+  return `${score}:${towers.map((tower) => tower.height).sort((a, b) => a - b).join(',')}`;
+}
+
+function checkSearchBudget(budget: SearchBudget): void {
+  if (Date.now() >= budget.deadline) throw new SearchDeadlineReached();
+}
+
+function canonicalTowerOrder(towers: readonly Tower[]): Tower[] {
+  return towers
+    .map((tower) => ({ ...tower }))
+    .sort((left, right) =>
+      left.height - right.height ||
+      (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+}
+
+function evaluateNextTurn(
+  player: Player,
+  towers: Tower[],
+  score: number,
+  targetPoints: number,
+  cache: Map<string, StrategicValue>,
+): StrategicValue {
+  const key = `${score}:${towers.map((tower) => tower.height).sort((a, b) => a - b).join(',')}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+
+  const futurePlayer: Player = {
+    ...player,
+    score,
+    towers: canonicalTowerOrder(towers).map((tower, index) => ({ ...tower, slot: index })),
+  };
+  let winProbability = 0;
+  let points = 0;
+  for (let die = 1; die <= 6; die += 1) {
+    const bank = chooseBestBank(futurePlayer, targetPoints, die);
+    const build = chooseNormalBuildAction(futurePlayer, die);
+    const buildValue = expectedSkylineValue(towersAfterBuild(futurePlayer, build));
+    if (bank?.wins) {
+      winProbability += 1;
+      points += bank.points;
+    } else {
+      points += bank && bank.value > buildValue ? bank.value : buildValue;
+    }
+  }
+  const value = { winProbability: winProbability / 6, points: points / 6 };
+  cache.set(key, value);
+  return value;
+}
+
+function enumerateBuildActions(player: Player, turnDie: number): PlayerAction[] {
+  const newSlot = player.towers.length < MAX_TOWERS ? firstFreeSlot(player.towers) : null;
+  const targetCount = player.towers.length + (newSlot === null ? 0 : 1);
+  const allocations = Array<number>(targetCount).fill(0);
+  const actions: PlayerAction[] = [];
+
+  const visit = (index: number, remaining: number): void => {
+    if (index === targetCount) {
+      const placements = new Map<string, number>();
+      const newTowerSlots = new Map<string, number>();
+      for (let towerIndex = 0; towerIndex < player.towers.length; towerIndex += 1) {
+        const floors = allocations[towerIndex]!;
+        if (floors > 0) placements.set(player.towers[towerIndex]!.id, floors);
+      }
+      if (newSlot !== null) {
+        const floors = allocations[player.towers.length]!;
+        if (floors > 0) {
+          const id = uniqueBotTowerId(player.towers, newSlot);
+          placements.set(id, floors);
+          newTowerSlots.set(id, newSlot);
+        }
+      }
+      actions.push(placementsToAction(placements, newTowerSlots));
+      return;
+    }
+    for (let amount = 0; amount <= remaining; amount += 1) {
+      allocations[index] = amount;
+      visit(index + 1, remaining - amount);
+    }
+  };
+  visit(0, turnDie);
+  return actions;
+}
+
+function enumerateBankActions(player: Player, turnDie: number): PlayerAction[] {
+  const maxTowers = Math.min(turnDie, player.towers.length);
+  const actions: PlayerAction[] = [];
+  const selectedIds: string[] = [];
+  const visit = (nextIndex: number): void => {
+    if (selectedIds.length > 0) actions.push({ kind: 'bank', towerIds: [...selectedIds] });
+    if (selectedIds.length === maxTowers) return;
+    for (let index = nextIndex; index < player.towers.length; index += 1) {
+      selectedIds.push(player.towers[index]!.id);
+      visit(index + 1);
+      selectedIds.pop();
+    }
+  };
+  visit(0);
+  return actions;
 }
 
 function placementsToAction(

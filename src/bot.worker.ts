@@ -1,0 +1,22 @@
+import { chooseBotAction } from './bot.js';
+import type { BotDecisionRequest, BotDecisionResponse } from './bot.js';
+
+self.addEventListener('message', (event: MessageEvent<BotDecisionRequest>) => {
+  let response: BotDecisionResponse;
+  try {
+    const request = event.data;
+    response = {
+      action: chooseBotAction(
+        request.player,
+        request.targetPoints,
+        request.turnDie,
+        request.opponents,
+      ),
+    };
+  } catch (error) {
+    response = {
+      error: error instanceof Error ? error.message : 'Robot decision failed.',
+    };
+  }
+  self.postMessage(response);
+});
