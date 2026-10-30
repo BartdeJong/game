@@ -44,8 +44,13 @@ export interface BotDecisionRequest {
   opponents: BotOpponent[];
 }
 
+export interface BotActionResult {
+  action: PlayerAction;
+  extremeSearchDepthUsed?: number;
+}
+
 export type BotDecisionResponse =
-  | { action: PlayerAction }
+  | BotActionResult
   | { error: string };
 
 const WIND_SUM_COUNTS = [1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1];
@@ -70,7 +75,7 @@ export function chooseBotTurnChoice(
       : { kind: 'build' };
   }
   if (difficulty === 'extreme') {
-    const action = chooseExtremeAction(player, targetPoints, turnDie, opponents);
+    const action = chooseExtremeAction(player, targetPoints, turnDie, opponents).action;
     return action.kind === 'bank'
       ? { kind: 'bank', towerIds: action.towerIds }
       : { kind: 'build', action };
@@ -95,7 +100,9 @@ export function chooseBotBuildAction(
   const difficulty = player.botDifficulty ?? 'normal';
   if (difficulty === 'easy') return chooseEasyBuildAction(player, turnDie);
   if (difficulty === 'ultra') return chooseUltraAction(player, targetPoints, turnDie, false);
-  if (difficulty === 'extreme') return chooseExtremeAction(player, targetPoints, turnDie, opponents, false);
+  if (difficulty === 'extreme') {
+    return chooseExtremeAction(player, targetPoints, turnDie, opponents, false).action;
+  }
   return difficulty === 'hard'
     ? chooseHardBuildAction(player, turnDie)
     : chooseNormalBuildAction(player, turnDie);
@@ -110,6 +117,23 @@ export function chooseBotAction(
   const choice = chooseBotTurnChoice(player, targetPoints, turnDie, opponents);
   if (choice.kind === 'bank') return choice;
   return choice.action ?? chooseBotBuildAction(player, turnDie, targetPoints, opponents);
+}
+
+export function chooseBotActionWithDetails(
+  player: Player,
+  targetPoints: number,
+  turnDie: number,
+  opponents: readonly BotOpponent[] = [],
+): BotActionResult {
+  if ((player.botDifficulty ?? 'normal') !== 'extreme') {
+    return { action: chooseBotAction(player, targetPoints, turnDie, opponents) };
+  }
+  if (!Number.isInteger(targetPoints) || targetPoints < 1) {
+    throw new Error('Robot target must be a positive whole number.');
+  }
+  validateBotDie(turnDie);
+  const result = chooseExtremeAction(player, targetPoints, turnDie, opponents);
+  return { action: result.action, extremeSearchDepthUsed: result.searchDepth };
 }
 
 function validateBotDie(turnDie: number): void {
@@ -376,7 +400,7 @@ function chooseExtremeAction(
   turnDie: number,
   opponents: readonly BotOpponent[],
   includeBanking = true,
-): PlayerAction {
+): { action: PlayerAction; searchDepth: number } {
   const opponentWinningScore = includeBanking
     ? predictImmediateOpponentWin(player, opponents, targetPoints)
     : null;
@@ -393,7 +417,7 @@ function chooseExtremeAction(
         bestPoints = points;
       }
     }
-    return bestBank ?? chooseHardBuildAction(player, turnDie);
+    return { action: bestBank ?? chooseHardBuildAction(player, turnDie), searchDepth: 0 };
   }
 
   const maxDepth = player.extremeSearchDepth ?? DEFAULT_EXTREME_SEARCH_DEPTH;
@@ -402,7 +426,10 @@ function chooseExtremeAction(
   }
   const winningBank = chooseBestBank(player, targetPoints, turnDie);
   if (includeBanking && winningBank?.wins) {
-    return { kind: 'bank', towerIds: winningBank.towerIds };
+    return {
+      action: { kind: 'bank', towerIds: winningBank.towerIds },
+      searchDepth: 0,
+    };
   }
 
   const actions = deduplicateExtremeActions(
@@ -463,7 +490,7 @@ function chooseExtremeAction(
   for (const candidate of finalActions.slice(1)) {
     if (isBetterStrategicValue(candidate.value, best.value)) best = candidate;
   }
-  return best.action;
+  return { action: best.action, searchDepth: maxDepth };
 }
 
 function deduplicateExtremeActions(

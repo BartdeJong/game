@@ -171,7 +171,13 @@ function isRoundTurnRoll(value: unknown): value is MatchState['roundTurnRolls'][
     typeof value.die === 'number' &&
     Number.isInteger(value.die) &&
     value.die >= 1 &&
-    value.die <= 6;
+    value.die <= 6 &&
+    (!('extremeSearchDepthUsed' in value) ||
+      (value.choice !== 'choose' &&
+        typeof value.extremeSearchDepthUsed === 'number' &&
+        Number.isInteger(value.extremeSearchDepthUsed) &&
+        value.extremeSearchDepthUsed >= 0 &&
+        value.extremeSearchDepthUsed <= 500));
 }
 
 function isPlayerState(value: unknown): boolean {
