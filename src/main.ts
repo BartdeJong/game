@@ -34,6 +34,7 @@ import {
   chooseBotAction,
   type BotDecisionRequest,
   type BotDecisionResponse,
+  type BotActionResult,
   type BotOpponent,
 } from './bot';
 import { parseMessage, type PeerMessage } from './protocol';
@@ -807,6 +808,14 @@ function roundRollBarMarkup(state: MatchState, readyCount: number, isHost: boole
       const pointsEarned = showRoundScores
         ? latestRound?.pointsEarned?.find((entry) => entry.playerId === player.id)?.points
         : undefined;
+      const depthUsed = player.isBot &&
+        (player.botDifficulty ?? 'normal') === 'extreme' &&
+        roll?.choice !== 'choose'
+        ? roll?.extremeSearchDepthUsed
+        : undefined;
+      const depthStatus = depthUsed === undefined
+        ? ''
+        : `<small class="round-roll-search-depth">${escapeHtml(localizeText('Extreme depth used: {depth}', language).replace('{depth}', String(depthUsed)))}</small>`;
       const score = `<span class="round-roll-player-score"><strong>${player.score}</strong><small>PTS TOTAL</small></span>`;
       const roundScore = pointsEarned === undefined
         ? ''
@@ -816,7 +825,7 @@ function roundRollBarMarkup(state: MatchState, readyCount: number, isHost: boole
         : '';
       const isLeader = highScore > 0 && player.score === highScore;
       return `<article class="round-roll-entry ${roll ? 'round-roll-ready' : ''} ${isLeader ? 'round-roll-leader-entry' : ''}" title="${escapeHtml(player.name)}">
-        <strong>${escapeHtml(player.name)}${!player.connected ? ' · OFFLINE' : ''}</strong>${isLeader ? `<small class="round-roll-leader">${localizeText('LEADER', language)}</small>` : ''}${result}${score}${roundScore}${removePlayer}
+        <strong>${escapeHtml(player.name)}${!player.connected ? ' · OFFLINE' : ''}</strong>${isLeader ? `<small class="round-roll-leader">${localizeText('LEADER', language)}</small>` : ''}${result}${depthStatus}${score}${roundScore}${removePlayer}
       </article>`;
     }).join('')}</div>
   </section>`;
@@ -1282,7 +1291,7 @@ async function submitBotActions(): Promise<void> {
   const round = state.round;
   const results = await Promise.all(jobs.map(async ({ player, request }) => {
     try {
-      return { playerId: player.id, action: await calculateBotActionInWorker(request) };
+      return { playerId: player.id, decision: await calculateBotActionInWorker(request) };
     } catch (error) {
       return {
         playerId: player.id,
@@ -1305,18 +1314,21 @@ async function submitBotActions(): Promise<void> {
     if (!player?.isBot || !turn || turn.choice !== 'choose' || submitted.has(player.id)) continue;
 
     let action: PlayerAction;
+    let extremeSearchDepthUsed: number | undefined;
     try {
       if ('error' in result) {
         usedFallback = true;
         console.error(`Robot worker failed for ${player.name}; using a Hard-level fallback.`, result.error);
         action = chooseBotAction({ ...player, botDifficulty: 'hard' }, state.targetPoints, turn.die);
       } else {
-        action = result.action;
+        action = result.decision.action;
+        extremeSearchDepthUsed = result.decision.extremeSearchDepthUsed;
       }
       if (!isLegalAction(player, action, action.kind === 'build' ? 'build' : 'choose', turn.die)) {
         usedFallback = true;
         console.error(`Robot worker returned an illegal move for ${player.name}; using a Hard-level fallback.`);
         action = chooseBotAction({ ...player, botDifficulty: 'hard' }, state.targetPoints, turn.die);
+        extremeSearchDepthUsed = undefined;
       }
       if (!isLegalAction(player, action, action.kind === 'build' ? 'build' : 'choose', turn.die)) {
         throw new Error(`The fallback move for ${player.name} is not legal.`);
@@ -1327,7 +1339,12 @@ async function submitBotActions(): Promise<void> {
       return;
     }
 
-    hostState = chooseTurnMode(hostState, player.id, action.kind);
+    hostState = chooseTurnMode(
+      hostState,
+      player.id,
+      action.kind,
+      player.botDifficulty === 'extreme' ? extremeSearchDepthUsed ?? 0 : undefined,
+    );
     submitted.set(player.id, action);
   }
   if (usedFallback) showFailure('A robot worker failed; a Hard-level move was used for this turn.');
@@ -1336,7 +1353,7 @@ async function submitBotActions(): Promise<void> {
   maybeResolveRound();
 }
 
-function calculateBotActionInWorker(request: BotDecisionRequest): Promise<PlayerAction> {
+function calculateBotActionInWorker(request: BotDecisionRequest): Promise<BotActionResult> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./bot.worker.ts', import.meta.url), { type: 'module' });
     let settled = false;
@@ -1355,8 +1372,7 @@ function calculateBotActionInWorker(request: BotDecisionRequest): Promise<Player
         const message = response.error;
         finish(() => reject(new Error(message)));
       } else {
-        const action = response.action;
-        finish(() => resolve(action));
+        finish(() => resolve(response));
       }
     }, { once: true });
     worker.addEventListener('error', (event) => {

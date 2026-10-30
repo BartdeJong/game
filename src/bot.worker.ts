@@ -1,4 +1,4 @@
-import { chooseBotAction } from './bot.js';
+import { chooseBotActionWithDetails } from './bot.js';
 import type { BotDecisionRequest, BotDecisionResponse } from './bot.js';
 
 self.addEventListener('message', (event: MessageEvent<BotDecisionRequest>) => {
@@ -6,7 +6,7 @@ self.addEventListener('message', (event: MessageEvent<BotDecisionRequest>) => {
   try {
     const request = event.data;
     response = {
-      action: chooseBotAction(
+      ...chooseBotActionWithDetails(
         request.player,
         request.targetPoints,
         request.turnDie,

@@ -323,6 +323,7 @@ textarea { resize: vertical; }
 .round-roll-entry { display: grid; min-width: 0; justify-items: center; gap: 3px; padding: 6px 3px; border: 1px solid var(--line); border-radius: 4px; text-align: center; }
 .round-roll-entry strong { max-width: 100%; overflow: hidden; color: #d9e3d9; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
 .round-roll-entry small { color: var(--muted); font: .62rem var(--mono); }
+.round-roll-search-depth { max-width: 100%; overflow-wrap: anywhere; }
 .round-roll-ready { border-color: rgba(193, 227, 122, .42); }
 .round-roll-leader-entry { border-color: var(--lime); background: rgba(193, 227, 122, .1); box-shadow: inset 0 0 0 1px rgba(193, 227, 122, .28); }
 .round-roll-leader { padding: 2px 5px; border-radius: 2px; color: var(--lime) !important; background: rgba(193, 227, 122, .12); font: 700 .5rem var(--mono) !important; letter-spacing: .06em; }

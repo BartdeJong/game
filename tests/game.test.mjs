@@ -21,7 +21,11 @@ import {
   towerPoints,
   towerShield,
 } from '../.test-build/src/game.js';
-import { chooseBotBuildAction, chooseBotTurnChoice } from '../.test-build/src/bot.js';
+import {
+  chooseBotActionWithDetails,
+  chooseBotBuildAction,
+  chooseBotTurnChoice,
+} from '../.test-build/src/bot.js';
 import {
   createRoomCode,
   formatRoomCode,
@@ -78,6 +82,11 @@ test('localizes interface text in the supported languages and preserves English'
   assert.equal(localizeText('Easy', 'nl'), 'Makkelijk');
   assert.equal(localizeText('Hard', 'fr'), 'Difficile');
   assert.equal(localizeText('Thinking…', 'nl'), 'Denkt na…');
+  assert.equal(localizeText('Extreme depth used: {depth}', 'fr'), 'Profondeur Extreme utilisée : {depth}');
+  assert.deepEqual(
+    LANGUAGES.slice(1).map(({ code }) => localizeText('Extreme depth used: {depth}', code) !== 'Extreme depth used: {depth}'),
+    [true, true, true, true, true, true],
+  );
   assert.equal(localizeText('Animate dice rolls', 'nl'), 'Dobbelsteenworpen animeren');
   assert.match(localizeText('When off, rolls stay visible but skip the full-screen reveal and die animation.', 'de'), /Vollbildanzeige/);
   assert.equal(localizeText('Roll a die first', 'nl'), 'Gooi eerst een dobbelsteen');
@@ -188,6 +197,31 @@ test('players roll first, then choose build or bank', () => {
     { playerId: 'a', choice: 'bank', die: 4 },
     { playerId: 'b', choice: 'build', die: 5 },
   ]);
+});
+
+test('shares the completed Extreme Robot search depth with players each round', () => {
+  const extreme = player('extreme', { isBot: true, botDifficulty: 'extreme' });
+  const state = activeState([extreme, player('guest')]);
+  const rolled = beginTurnRoll(state, 'extreme', 4);
+  const chosen = chooseTurnMode(rolled, 'extreme', 'build', 8);
+
+  assert.deepEqual(chosen.roundTurnRolls[0], {
+    playerId: 'extreme',
+    choice: 'build',
+    die: 4,
+    extremeSearchDepthUsed: 8,
+  });
+  assert.throws(() => chooseTurnMode(rolled, 'extreme', 'build', 501), /reported Extreme Robot search depth/);
+  const guestRolled = beginTurnRoll(rolled, 'guest', 3);
+  assert.throws(() => chooseTurnMode(guestRolled, 'guest', 'build', 8), /reported Extreme Robot search depth/);
+
+  const guestView = createPlayerView(chosen, 'guest');
+  assert.deepEqual(parseMessage(JSON.stringify({
+    type: 'state',
+    state: guestView,
+    submittedCount: 1,
+    playerId: 'guest',
+  })).state.roundTurnRolls, chosen.roundTurnRolls);
 });
 
 test('builds can distribute one rolled die across multiple towers', () => {
@@ -562,6 +596,26 @@ test('Extreme Robot returns a legal build after its deeper search', () => {
     () => chooseBotTurnChoice({ ...extreme, extremeSearchDepth: 501 }, 80, 6),
     /search depth must be a whole number from 1 to 500/,
   );
+});
+
+test('Extreme Robot reports its completed search depth, including immediate decisions', () => {
+  const extreme = player('extreme', {
+    isBot: true,
+    botDifficulty: 'extreme',
+    extremeSearchDepth: 1,
+    towers: [0, 1, 2].map((slot) => ({ id: `own-${slot}`, height: 1, slot })),
+  });
+  assert.equal(chooseBotActionWithDetails(extreme, 80, 6).extremeSearchDepthUsed, 1);
+
+  const winningBank = player('winning-bank', {
+    isBot: true,
+    botDifficulty: 'extreme',
+    score: 75,
+    towers: [{ id: 'tower', height: 4, slot: 0 }],
+  });
+  const decision = chooseBotActionWithDetails(winningBank, 80, 1);
+  assert.deepEqual(decision.action, { kind: 'bank', towerIds: ['tower'] });
+  assert.equal(decision.extremeSearchDepthUsed, 0);
 });
 
 test('Extreme Robot forecasts opponents while returning a legal action', () => {

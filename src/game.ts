@@ -57,10 +57,12 @@ export interface RoundAction {
   description: string;
 }
 
-export type RoundTurnRoll =
-  | { playerId: string; choice: 'choose'; die: number }
-  | { playerId: string; choice: 'build'; die: number }
-  | { playerId: string; choice: 'bank'; die: number };
+export interface RoundTurnRoll {
+  playerId: string;
+  choice: 'choose' | 'build' | 'bank';
+  die: number;
+  extremeSearchDepthUsed?: number;
+}
 
 export interface RoundResolution {
   round: number;
@@ -251,6 +253,7 @@ export function chooseTurnMode(
   state: MatchState,
   playerId: string,
   choice: 'build' | 'bank',
+  extremeSearchDepthUsed?: number,
 ): MatchState {
   if (state.status !== 'choice' || state.dice !== null) {
     throw new Error('There is no active round to choose an action for.');
@@ -258,8 +261,24 @@ export function chooseTurnMode(
   const index = state.roundTurnRolls.findIndex((turn) =>
     turn.playerId === playerId && turn.choice === 'choose');
   if (index < 0) throw new Error('This player has not rolled for the active round.');
+  if (extremeSearchDepthUsed !== undefined) {
+    const player = state.players.find((item) => item.id === playerId);
+    if (
+      !player?.isBot ||
+      player.botDifficulty !== 'extreme' ||
+      !Number.isInteger(extremeSearchDepthUsed) ||
+      extremeSearchDepthUsed < 0 ||
+      extremeSearchDepthUsed > MAX_EXTREME_SEARCH_DEPTH
+    ) {
+      throw new Error('The reported Extreme Robot search depth is invalid.');
+    }
+  }
   const roundTurnRolls = [...state.roundTurnRolls];
-  roundTurnRolls[index] = { playerId, choice, die: roundTurnRolls[index]!.die };
+  roundTurnRolls[index] = {
+    ...roundTurnRolls[index]!,
+    choice,
+    ...(extremeSearchDepthUsed === undefined ? {} : { extremeSearchDepthUsed }),
+  };
   return { ...state, roundTurnRolls };
 }
 
