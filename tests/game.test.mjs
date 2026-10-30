@@ -152,9 +152,10 @@ test('validates Extreme Robot search depth settings', () => {
   assert.equal(DEFAULT_EXTREME_SEARCH_DEPTH, 8);
   assert.equal(isExtremeSearchDepth(1), true);
   assert.equal(isExtremeSearchDepth(50), true);
+  assert.equal(isExtremeSearchDepth(500), true);
   assert.equal(isExtremeSearchDepth(0), false);
   assert.equal(isExtremeSearchDepth(50.5), false);
-  assert.equal(isExtremeSearchDepth(51), false);
+  assert.equal(isExtremeSearchDepth(501), false);
 });
 
 test('allows rooms with up to ten players', () => {
@@ -557,8 +558,8 @@ test('Extreme Robot returns a legal build after its deeper search', () => {
   assert.ok(action);
   assert.equal(isLegalAction(extreme, action, 'build', 6), true);
   assert.throws(
-    () => chooseBotTurnChoice({ ...extreme, extremeSearchDepth: 51 }, 80, 6),
-    /search depth must be a whole number from 1 to 50/,
+    () => chooseBotTurnChoice({ ...extreme, extremeSearchDepth: 501 }, 80, 6),
+    /search depth must be a whole number from 1 to 500/,
   );
 });
 
@@ -651,7 +652,7 @@ test('protocol preserves per-player recovery credentials and submission state', 
     type: 'state',
     state: {
       ...robotState,
-      players: [robotState.players[0], { ...robotState.players[1], extremeSearchDepth: 51 }],
+      players: [robotState.players[0], { ...robotState.players[1], extremeSearchDepth: 501 }],
     },
     submittedCount: 0,
     playerId: 'host',

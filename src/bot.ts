@@ -392,7 +392,7 @@ function chooseExtremeAction(
 
   const maxDepth = player.extremeSearchDepth ?? DEFAULT_EXTREME_SEARCH_DEPTH;
   if (!isExtremeSearchDepth(maxDepth)) {
-    throw new Error('Extreme Robot search depth must be a whole number from 1 to 50.');
+    throw new Error('Extreme Robot search depth must be a whole number from 1 to 500.');
   }
   let bestAction = chooseUltraAction(player, targetPoints, turnDie, includeBanking);
   const actions = enumerateBuildActions(player, turnDie);

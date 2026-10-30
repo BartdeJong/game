@@ -7,7 +7,7 @@ export const MAX_WIN_POINTS = 200;
 export const MAX_TOWER_SHIELD = 3;
 export const DEFAULT_EXTREME_SEARCH_DEPTH = 8;
 export const MIN_EXTREME_SEARCH_DEPTH = 1;
-export const MAX_EXTREME_SEARCH_DEPTH = 50;
+export const MAX_EXTREME_SEARCH_DEPTH = 500;
 
 export interface Tower {
   id: string;

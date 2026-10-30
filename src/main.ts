@@ -720,7 +720,7 @@ function renderHost(): string {
     <div class="lobby-robot-control">
       <button class="button button-secondary" data-action="add-robot" type="button" ${state.players.length >= MAX_PLAYERS ? 'disabled' : ''}>＋ Add a robot</button>
       <p class="quiet-note">Robots choose automatically. Add one to play solo or mix robots with guests.</p>
-      <p class="quiet-note">${localizeText('Set each robot to Easy, Normal, Hard, Ultra Hard, or Extreme Robot. Extreme Robot searches to its configured depth (1–50 future turns) with no time limit; higher depths can take a long time.', language)}</p>
+      <p class="quiet-note">${localizeText('Set each robot to Easy, Normal, Hard, Ultra Hard, or Extreme Robot. Extreme Robot searches to its configured depth (1–500 future turns) with no time limit; very high depths may take impractically long.', language)}</p>
     </div>
     <div class="pair-area">
       ${connectedPlayers(state).length >= MIN_PLAYERS
@@ -1952,7 +1952,7 @@ app.addEventListener('change', (event) => {
       }
       const depth = Number(target.value);
       if (!isExtremeSearchDepth(depth)) {
-        showFailure('Search depth must be a whole number from 1 to 50.');
+        showFailure('Search depth must be a whole number from 1 to 500.');
         return;
       }
       robot.extremeSearchDepth = depth;
