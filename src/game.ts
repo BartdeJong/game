@@ -8,6 +8,7 @@ export const MAX_TOWER_SHIELD = 3;
 export const DEFAULT_EXTREME_SEARCH_DEPTH = 8;
 export const MIN_EXTREME_SEARCH_DEPTH = 1;
 export const MAX_EXTREME_SEARCH_DEPTH = 500;
+export const MAX_EXTREME_BOTS_PER_ROOM = 1;
 
 export interface Tower {
   id: string;
@@ -202,6 +203,9 @@ export function isLegalAction(
 export function beginGame(state: MatchState): MatchState {
   if (state.status !== 'lobby' || state.players.length < MIN_PLAYERS || state.players.length > MAX_PLAYERS) {
     throw new Error(`The room needs ${MIN_PLAYERS}–${MAX_PLAYERS} players before the game can start.`);
+  }
+  if (state.players.filter((player) => player.isBot && player.botDifficulty === 'extreme').length > MAX_EXTREME_BOTS_PER_ROOM) {
+    throw new Error('A room can only have one Extreme Robot.');
   }
   validateTargetPoints(state.targetPoints);
   return {

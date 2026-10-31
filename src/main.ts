@@ -13,6 +13,7 @@ import {
   MAX_TOWER_SHIELD,
   MAX_TOWERS,
   MAX_EXTREME_SEARCH_DEPTH,
+  MAX_EXTREME_BOTS_PER_ROOM,
   MAX_PLAYERS,
   MIN_EXTREME_SEARCH_DEPTH,
   MIN_WIN_POINTS,
@@ -31,7 +32,9 @@ import {
   type Tower,
 } from './game';
 import {
+  chooseBestBotActionResult,
   chooseBotAction,
+  getExtremeSearchWorkerCount,
   type BotDecisionRequest,
   type BotDecisionResponse,
   type BotActionResult,
@@ -762,7 +765,7 @@ function playerMarkup(player: Player, hostControls: boolean): string {
   const hostPlayerId = hostState?.players[0]?.id ?? guestState?.players[0]?.id;
   const botDifficultyControl = hostControls && player.isBot && hostState?.status === 'lobby'
     ? `<label class="bot-difficulty-control"><span class="sr-only">${escapeHtml(player.name)} ${localizeText('Bot difficulty', language)}</span><select class="bot-difficulty-select" data-bot-difficulty="${escapeHtml(player.id)}">${BOT_DIFFICULTY_OPTIONS.map(({ value, label }) =>
-      `<option value="${value}" ${(player.botDifficulty ?? 'normal') === value ? 'selected' : ''}>${localizeText(label, language)}</option>`,
+      `<option value="${value}" ${(player.botDifficulty ?? 'normal') === value ? 'selected' : ''} ${value === 'extreme' && stateHasOtherExtremeBot(player.id) ? 'disabled' : ''}>${localizeText(label, language)}</option>`,
     ).join('')}</select></label>`
     : '';
   const botSearchDepthControl = hostControls &&
@@ -780,6 +783,13 @@ function playerMarkup(player: Player, hostControls: boolean): string {
     ${hostControls && player.isBot ? `<button class="text-button danger-text" data-action="remove-robot" data-player="${escapeHtml(player.id)}" type="button">Remove</button>` : ''}
     ${hostControls && player.id !== hostId && !player.connected ? `<button class="text-button danger-text" data-action="remove-player" data-player="${escapeHtml(player.id)}" type="button">Remove</button>` : ''}
   </article>`;
+}
+
+function stateHasOtherExtremeBot(playerId: string): boolean {
+  return (hostState?.players.filter((player) =>
+    player.id !== playerId &&
+    player.isBot &&
+    player.botDifficulty === 'extreme').length ?? 0) >= MAX_EXTREME_BOTS_PER_ROOM;
 }
 
 function roundRollBarMarkup(state: MatchState, readyCount: number, isHost: boolean): string {
@@ -1291,7 +1301,10 @@ async function submitBotActions(): Promise<void> {
   const round = state.round;
   const results = await Promise.all(jobs.map(async ({ player, request }) => {
     try {
-      return { playerId: player.id, decision: await calculateBotActionInWorker(request) };
+      return {
+        playerId: player.id,
+        decision: await calculateBotActionsInWorkers(player, request, jobs.length),
+      };
     } catch (error) {
       return {
         playerId: player.id,
@@ -1351,6 +1364,30 @@ async function submitBotActions(): Promise<void> {
   broadcastState();
   render();
   maybeResolveRound();
+}
+
+function calculateBotActionsInWorkers(
+  player: Player,
+  request: BotDecisionRequest,
+  concurrentBotCount: number,
+): Promise<BotActionResult> {
+  const hardwareConcurrency = Math.max(
+    1,
+    (navigator.hardwareConcurrency || 1) - Math.max(0, concurrentBotCount - 1),
+  );
+  const workerCount = (player.botDifficulty ?? 'normal') === 'extreme'
+    ? getExtremeSearchWorkerCount(
+        hardwareConcurrency,
+        request.turnDie,
+        player.extremeSearchDepth ?? DEFAULT_EXTREME_SEARCH_DEPTH,
+      )
+    : 1;
+  const decisions = Array.from({ length: workerCount }, (_, index) =>
+    calculateBotActionInWorker({
+      ...request,
+      searchPartition: { index, count: workerCount },
+    }));
+  return Promise.all(decisions).then(chooseBestBotActionResult);
 }
 
 function calculateBotActionInWorker(request: BotDecisionRequest): Promise<BotActionResult> {
@@ -1989,6 +2026,10 @@ app.addEventListener('change', (event) => {
     }
     if (!isBotDifficulty(target.value)) {
       showFailure('Choose a valid bot difficulty.');
+      return;
+    }
+    if (target.value === 'extreme' && stateHasOtherExtremeBot(robot.id)) {
+      showFailure('A room can only have one Extreme Robot.');
       return;
     }
     robot.botDifficulty = target.value;
