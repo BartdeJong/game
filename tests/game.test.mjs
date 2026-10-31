@@ -22,9 +22,11 @@ import {
   towerShield,
 } from '../.test-build/src/game.js';
 import {
+  chooseBestBotActionResult,
   chooseBotActionWithDetails,
   chooseBotBuildAction,
   chooseBotTurnChoice,
+  getExtremeSearchWorkerCount,
 } from '../.test-build/src/bot.js';
 import {
   createRoomCode,
@@ -82,6 +84,7 @@ test('localizes interface text in the supported languages and preserves English'
   assert.equal(localizeText('Easy', 'nl'), 'Makkelijk');
   assert.equal(localizeText('Hard', 'fr'), 'Difficile');
   assert.equal(localizeText('Thinking…', 'nl'), 'Denkt na…');
+  assert.equal(localizeText('A room can only have one Extreme Robot.', 'fr'), 'Une salle ne peut avoir qu’un seul Extreme Robot.');
   assert.equal(localizeText('Extreme depth used: {depth}', 'fr'), 'Profondeur Extreme utilisée : {depth}');
   assert.deepEqual(
     LANGUAGES.slice(1).map(({ code }) => localizeText('Extreme depth used: {depth}', code) !== 'Extreme depth used: {depth}'),
@@ -173,6 +176,19 @@ test('allows rooms with up to ten players', () => {
   const state = { ...createMatch(players[0]), players };
   assert.equal(beginGame(state).players.length, 10);
   assert.throws(() => beginGame({ ...state, players: [...players, player('p10')] }), /2–10 players/);
+});
+
+test('limits each room to one Extreme Robot', () => {
+  const players = [
+    player('host'),
+    player('extreme-a', { isBot: true, botDifficulty: 'extreme' }),
+    player('extreme-b', { isBot: true, botDifficulty: 'extreme' }),
+  ];
+  assert.throws(
+    () => beginGame({ ...createMatch(players[0]), players }),
+    /A room can only have one Extreme Robot/,
+  );
+  assert.equal(beginGame({ ...createMatch(players[0]), players: players.slice(0, 2) }).players.length, 2);
 });
 
 test('players roll first, then choose build or bank', () => {
@@ -630,6 +646,29 @@ test('Extreme Robot honors a configured depth beyond the default', () => {
   );
 });
 
+test('Extreme Robot root search can be partitioned without changing depth or selected action', () => {
+  const extreme = player('extreme', {
+    botDifficulty: 'extreme',
+    extremeSearchDepth: 2,
+    towers: [
+      { id: 'a', height: 2, slot: 0 },
+      { id: 'b', height: 3, slot: 1 },
+    ],
+  });
+  const serial = chooseBotActionWithDetails(extreme, 80, 4);
+  const shards = Array.from({ length: 4 }, (_, index) =>
+    chooseBotActionWithDetails(extreme, 80, 4, [], { index, count: 4 }));
+
+  assert.deepEqual(chooseBestBotActionResult(shards).action, serial.action);
+  assert.equal(chooseBestBotActionResult(shards).extremeSearchDepthUsed, 2);
+  assert.equal(getExtremeSearchWorkerCount(1, 6, 20), 1);
+  assert.equal(getExtremeSearchWorkerCount(2, 6, 20), 2);
+  assert.equal(getExtremeSearchWorkerCount(8, 6, 20), 4);
+  assert.equal(getExtremeSearchWorkerCount(8, 1, 20), 2);
+  assert.equal(getExtremeSearchWorkerCount(8, 6, 8), 1);
+  assert.equal(getExtremeSearchWorkerCount(0, 6, 20), 1);
+});
+
 test('Extreme Robot forecasts opponents while returning a legal action', () => {
   const extreme = player('extreme', {
     botDifficulty: 'extreme',
@@ -736,6 +775,18 @@ test('protocol preserves per-player recovery credentials and submission state', 
     state: {
       ...robotState,
       players: [robotState.players[0], { ...robotState.players[1], extremeSearchDepth: 501 }],
+    },
+    submittedCount: 0,
+    playerId: 'host',
+  })), /unsupported game message/);
+  assert.throws(() => parseMessage(JSON.stringify({
+    type: 'state',
+    state: {
+      ...robotState,
+      players: [
+        ...robotState.players,
+        player('robot-2', { isBot: true, botDifficulty: 'extreme' }),
+      ],
     },
     submittedCount: 0,
     playerId: 'host',

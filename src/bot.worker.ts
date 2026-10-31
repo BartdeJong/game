@@ -11,6 +11,7 @@ self.addEventListener('message', (event: MessageEvent<BotDecisionRequest>) => {
         request.targetPoints,
         request.turnDie,
         request.opponents,
+        request.searchPartition,
       ),
     };
   } catch (error) {

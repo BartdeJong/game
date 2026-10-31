@@ -1,6 +1,7 @@
 import {
   MAX_PLAYERS,
   MAX_TOWERS,
+  MAX_EXTREME_BOTS_PER_ROOM,
   MAX_WIN_POINTS,
   MIN_WIN_POINTS,
   isBotDifficulty,
@@ -136,6 +137,13 @@ function isMatchState(value: unknown): value is MatchState {
   if (
     !value.history.every((round) => isRoundHistoryEntry(round)) ||
     players.some((player: unknown) => !isPlayerState(player)) ||
+    players.filter((player) =>
+      typeof player === 'object' &&
+      player !== null &&
+      'isBot' in player &&
+      player.isBot === true &&
+      'botDifficulty' in player &&
+      player.botDifficulty === 'extreme').length > MAX_EXTREME_BOTS_PER_ROOM ||
     !roundTurnRolls.every(isRoundTurnRoll) ||
     new Set(roundTurnRolls.map((turn) => turn.playerId)).size !== roundTurnRolls.length ||
     roundTurnRolls.some((turn) => !players.some((player: unknown) =>
